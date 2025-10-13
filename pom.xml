@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>org.example</groupId>
+    <artifactId>qrcodeForwin</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <!-- zxing  二维码生成 和解析-->
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>core</artifactId>
+            <version>3.5.3</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>javase</artifactId>
+            <version>3.5.3</version>
+        </dependency>
+        <!-- 使用 Tesseract 进行 OCR 图片识别  -->
+        <!--        <dependency>-->
+        <!--            <groupId>net.sourceforge.tess4j</groupId>-->
+        <!--            <artifactId>tess4j</artifactId>-->
+        <!--            <version>4.5.4</version>-->
+        <!--        </dependency>-->
+
+        <!-- OpenPnP 的 OpenCV 包装器： 图像预处理 使用 OpenCV 对图像进行预处理，包括二值化、去噪和增强对比度 ：
+        这个版本的 OpenCV 库依赖于系统上已经安装的 OpenCV 库。你需要手动安装 OpenCV 并配置好环境变量。-->
+        <!--        <dependency>-->
+        <!--            <groupId>org.openpnp</groupId>-->
+        <!--            <artifactId>opencv</artifactId>-->
+        <!--            <version>4.10.0</version>-->
+        <!--        </dependency>-->
+
+        <!--  Bytedeco 的 OpenCV 包装器： 使用 JavaCPP 预编译二进制文件，这意味着你不需要单独安装本地的 OpenCV 库，所有依赖都包含在 JAR 文件中。-->
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacpp</artifactId>
+            <version>1.5.7</version>
+            <classifier>windows-x86_64</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>openblas</artifactId>
+            <version>0.3.19-1.5.7</version>
+            <classifier>windows-x86_64</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>opencv</artifactId>
+            <version>4.5.5-1.5.7</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>opencv</artifactId>
+            <version>4.5.5-1.5.7</version>
+            <classifier>windows-x86_64</classifier>
+        </dependency>
+        <!--以上依赖用于windows系统 如果要发布到liunx系统把windows-x86_64改成liunx-x86_64-->
+
+
+        <!--   xls文档解析和生成-->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi</artifactId>
+            <version>5.2.3</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.3</version>
+        </dependency>
+
+        <!--BoofCV 是一个强大的计算机视觉库，支持多种图像处理任务，包括二维码识别
+            Version 0.39 and before maintained compatibility with Java 8-->
+        <!-- https://mvnrepository.com/artifact/org.boofcv/boofcv-io -->
+        <dependency>
+            <groupId>org.boofcv</groupId>
+            <artifactId>boofcv-io</artifactId>
+            <version>0.39</version>
+        </dependency>
+
+        <!--   使用 JCodec 提取视频帧 JCodec 是一个纯 Java 的视频编码/解码库-->
+        <!-- JCodec Core -->
+        <dependency>
+            <groupId>org.jcodec</groupId>
+            <artifactId>jcodec</artifactId>
+            <version>0.2.5</version>
+        </dependency>
+        <!-- JCodec JAVASE -->
+        <dependency>
+            <groupId>org.jcodec</groupId>
+            <artifactId>jcodec-javase</artifactId>
+            <version>0.2.5</version>
+        </dependency>
+
+
+        <!-- 本地JAR文件依赖 -->
+        <!--        <dependency>-->
+        <!--            <groupId>com.custom</groupId>-->
+        <!--            <artifactId>custom-library</artifactId>-->
+        <!--            <version>1.0</version>-->
+        <!--            <scope>system</scope>-->
+        <!--            <systemPath> $ {project.basedir}/lib/custom-library.jar</systemPath>-->
+        <!--        </dependency>-->
+    </dependencies>
+
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <!-- 版本可根据实际情况调整 -->
+                <version>2.4.3</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <includeSystemScope>true</includeSystemScope>
+                    <!-- 此处替换对应的Main方法 -->
+                    <mainClass>com.example.qrcode.Main</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+
+
+    </build>
+</project>
