@@ -82,8 +82,8 @@ public class JCodecUtill {
 
                 // 构建输出文件路径
                 String outputPath = outputDirPath + "frame_" + String.format("%04d", frameNumber) + ".png";
-                // 每10帧 保存一张图片  如果30帧的视频 一秒保存3张图片，这样可以减少识别量
-                if( i== 10){
+                // 每5帧 保存一张图片  如果30帧的视频 一秒保存6张图片，这样可以减少识别量
+                if( i== 5){
                     i = 0;
                     // 保存图像
                     ImageIO.write(bufferedImage, "png", new File(outputPath));
