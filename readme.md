@@ -9,6 +9,10 @@
 实现原理：
 使用Zxing + Boofcv + Opencv 三种主流开源技术进行生成和识别二维码,发送方将文件按照1k大小字符串进行切分并转成二维码，接受方识别二维码转成字符串后生成文件
 
+1。文件转成字符串 ==》  Base64方式
+2。字符串拆分之后生成二维码图片 ==》  首先 Zxing 然后 Boofcv
+3。二维码图片识别成 字符串  ==》 首先 Zxing 然后 Boofcv 然后 Opencv
+4。视频按帧生成图片   ==》 首先 JCodec 然后FFmpeg（需要调用[ffmpeg-8.0-essentials_build](src/main/resources/ffmpeg-8.0-essentials_build)）
 
 说明文档:
 

@@ -5,10 +5,8 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  *
@@ -20,6 +18,9 @@ import java.util.UUID;
 public class FileConvertUtil {
     private static final int MAX_SEGMENT_SIZE = 1024; // Maximum size of each segment in bytes
     private static final String TEMP_QRCODE_DIR = "/temp_qr_codes/";
+
+    //创建一个动态大小为200的线程池
+    static ExecutorService executorService = new ThreadPoolExecutor(100,200,60L, TimeUnit.SECONDS,new ArrayBlockingQueue<>(10000));
 
 
 
@@ -36,7 +37,8 @@ public class FileConvertUtil {
         // 将二维码图片识别成文本并转成xls文件
         //String qrcodeFilePath = "C:\\soft\\tesseract-ocr\\text\\wechat-qr\\";
         //String qrcodeFilePath = "C:\\soft\\tesseract-ocr\\text\\44mp4\\";
-        String qrcodeFilePath = "C:\\soft\\tesseract-ocr\\text\\buqingxi\\";
+       // String qrcodeFilePath = "C:\\soft\\tesseract-ocr\\text\\buqingxi\\";
+        String qrcodeFilePath = "C:\\soft\\二维码文件传输工具\\20251117\\videoToPic";
         qrCode4ToFile(qrcodeFilePath);
     }
 
@@ -97,6 +99,8 @@ public class FileConvertUtil {
 
         File directory = new File(qrcodeFilePath);
         File[] files = directory.listFiles();
+        // 遍历文件夹 得到要处理的图片路径
+        List<String>  todoDecodeFilePathList = new ArrayList<>();
         for (File file : files) {
             if(file.isFile() &&
                     (file.getPath().endsWith("png")
@@ -105,21 +109,50 @@ public class FileConvertUtil {
                        ||file.getPath().endsWith("JPG")
                     )){
                 File absoluteFile = file.getAbsoluteFile();
-                String decode = QRCodeUtil.decode(absoluteFile.getPath());
-                System.out.println("正在二维码识别:" + absoluteFile.getPath() +" 识别结果=" + decode);
-                if(decode == null || decode.length() < 4){
-                    System.out.println("二维码识别不满足跳过！" + absoluteFile.getPath() +" 识别结果=" + decode);
-                    continue;
-                }
-                String page = decode.substring(0,4).replace(" ","");
-                String content = decode.substring(4);
-                // map 不存在就插入 存在就跳过
-                if(!pageContentMap.containsKey(Integer.valueOf(page))){
-                    pageContentMap.put(Integer.valueOf(page),content);
-                }
+                todoDecodeFilePathList.add(absoluteFile.getPath());
             }
-
         }
+
+        // 使用多线程处理
+
+        CountDownLatch countDownLatch = new CountDownLatch(todoDecodeFilePathList.size());
+        //遍历待处理图片集合
+        for (String filepath : todoDecodeFilePathList) {
+
+            executorService.execute(()->{
+
+                try {
+                    String  decode = QRCodeUtil.decode(filepath);
+                    System.out.println("正在二维码识别:" + filepath +" 识别结果=" + decode);
+                    // 异常识别结果跳过
+                    if(decode == null || decode.length() < 4){
+                        System.out.println("二维码识别不满足跳过！" + filepath +" 识别结果=" + decode);
+                    }else {
+                        String page = decode.substring(0,4).replace(" ","");
+                        String content = decode.substring(4);
+                        // map 不存在就插入 存在就跳过
+                        if(!pageContentMap.containsKey(Integer.valueOf(page))){
+                            pageContentMap.put(Integer.valueOf(page),content);
+                        }
+                    }
+
+                } catch (Exception e) {
+                    System.out.println("使用多线程处理异常"+e.toString());
+                }finally {
+                    countDownLatch.countDown();
+                }
+
+            });
+        }
+        // 等待所有线程处理完成
+        try {
+            countDownLatch.await();
+        }catch (Exception e){
+            System.out.println("使用多线程处理超时异常"+e.toString());
+        }
+
+
+
         // 将map 里面记录页码对应的小字符串 按照页码升序转成大字符串
         System.out.println("将map 里面记录页码对应的小字符串 按照页码升序转成大字符串");
         StringBuilder bigContent = new StringBuilder();

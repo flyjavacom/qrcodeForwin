@@ -1,5 +1,6 @@
 package com.example.qrcode.demo;
 
+import com.example.qrcode.utils.FFmpegUtil;
 import com.example.qrcode.utils.FileConvertUtil;
 import com.example.qrcode.utils.JCodecUtill;
 
@@ -117,7 +118,7 @@ public class FileTransferApp extends JFrame {
                             // 判断文件是否7m 以内
                             long fileSizeInBytes = selectedFile.length();
                             double fileSizeInMB = (double) fileSizeInBytes / (1024 * 1024);
-                            if (fileSizeInMB > 7) {
+                            if (fileSizeInMB > 70) {
                                 appendStatus("已选择文件大小！ " + fileSizeInMB + " MB");
                                 throw new Exception("文件大小超过7M ，请重新选择！");
                             }
@@ -206,9 +207,21 @@ public class FileTransferApp extends JFrame {
                             String videoPath = selectedVideoFile.getAbsolutePath();
                             // 视频当前文件夹
                             String videoParent = selectedVideoFile.getParent();
-                            appendStatus("开始 [二维码视频==》图片]！ " + selectedVideoFile.getName());
+
                             String outputDirPath = videoParent + "/videoToPic/";
-                            JCodecUtill.videoToPic(videoPath,outputDirPath );
+                            try{
+                                // 使用 JCodec 对视频文件进行按帧进行输出图片，该组件
+                                appendStatus("开始 [二维码视频=JCodec=》图片] 将使用JCodec开源组件进行视频处理！ " + selectedVideoFile.getName());
+                                JCodecUtill.videoToPic(videoPath,outputDirPath );
+                                appendStatus("完成 [二维码视频=JCodec=》图片]！ " + selectedVideoFile.getName());
+                            }catch (Exception exception){
+                                appendStatus("失败 [二维码视频=JCodec=》图片]！将使用ffmpeg开源组件进行视频处理！ " + selectedVideoFile.getName());
+                                appendStatus("开始 [二维码视频=FFmpeg=》图片]！ " + selectedVideoFile.getName());
+                                FFmpegUtil.videoToPic(videoPath,outputDirPath );
+                                appendStatus("完成 [二维码视频=FFmpeg=》图片]！ " + selectedVideoFile.getName());
+                            }
+
+
                             appendStatus("完成 [二维码视频==》按帧截取图片]！ 按帧截取图片输出目录：" + outputDirPath);
                             appendStatus("开始 [按帧截取图片==》文件]！ 按帧截取图片输出目录：" + outputDirPath);
                             String res = FileConvertUtil.qrCode4ToFile(outputDirPath);
