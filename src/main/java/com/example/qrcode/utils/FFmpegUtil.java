@@ -64,14 +64,12 @@ public class FFmpegUtil {
             String ffmpegPath = new File(FFmpegUtil.class.getResource("/ffmpeg-8.0-essentials_build/bin/ffmpeg.exe").getFile()).getAbsolutePath();
 
             // 构建FFmpeg命令
-
             ProcessBuilder processBuilder = new ProcessBuilder(
                     "\"" + ffmpegPath + "\"",
                     "-i", videoFilePath,
-                    "-vf", "fps=30",  // 每秒提取30帧
+                    "-vf", "fps=6",  // 每秒提取6帧
                     outputDirPath + "frame_%04d.png"
             );
-
             Process process = processBuilder.start();
 
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
