@@ -2,10 +2,10 @@ package com.example.qrcode.utils;
 
 
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 /**
  *
@@ -44,8 +44,6 @@ public class FFmpegUtil {
      */
     public static void videoToPic(String videoFilePath, String outputDirPath) {
 
-
-
         System.out.println("视频文件路径" + videoFilePath );
         // 创建输出目录
         File outputDir = new File(outputDirPath);
@@ -57,15 +55,24 @@ public class FFmpegUtil {
             deleteFilesContainingString(new File(outputDirPath),"frame_");
         }
 
-        try {
-            // 将ffmpeg 直接放在Resources 下面，这样不需要本地安装了。
+        // 将ffmpeg 直接放在Resources 下面，这样不需要本地安装了。
+        // 从 JAR 中提取 ffmpeg.exe 到临时文件：由于 JAR 文件是只读的，无法直接从中执行可执行文件，因此需要先将 ffmpeg.exe 提取到一个临时文件中，然后再执行该文件
 
-            // 获取资源路径下的ffmpeg.exe
-            String ffmpegPath = new File(FFmpegUtil.class.getResource("/ffmpeg-8.0-essentials_build/bin/ffmpeg.exe").getFile()).getAbsolutePath();
+        // 资源路径中的 ffmpeg.exe
+        String resourcePath = "/ffmpeg-8.0-essentials_build/bin/ffmpeg.exe";
+
+        // 提取 ffmpeg.exe 到临时文件
+        File tempFile = extractResourceToFile(resourcePath);
+        try {
+            System.out.println("获取ffmpeg.exe临时路径 ==" +  tempFile.getAbsolutePath());
+            if (tempFile == null) {
+                System.err.println("Failed to extract ffmpeg.exe from resources.");
+                return;
+            }
 
             // 构建FFmpeg命令
             ProcessBuilder processBuilder = new ProcessBuilder(
-                    "\"" + ffmpegPath + "\"",
+                    "\"" +  tempFile.getAbsolutePath() + "\"",
                     "-i", videoFilePath,
                     "-vf", "fps=6",  // 每秒提取6帧
                     outputDirPath + "frame_%04d.png"
@@ -83,10 +90,41 @@ public class FFmpegUtil {
 
         } catch (IOException | InterruptedException e) {
             e.printStackTrace();
+        } finally {
+            // 删除临时文件
+            if (!tempFile.delete()) {
+                System.err.println("Failed to delete temporary file: " + tempFile.getAbsolutePath());
+            }
         }
     }
 
+    /**
+     *  将resource 文件复制到临时文件夹里面
+     * @param resourcePath
+     * @return
+     */
+    private static File extractResourceToFile(String resourcePath) {
+        try (InputStream inputStream = FFmpegUtil.class.getResourceAsStream(resourcePath)) {
+            if (inputStream == null) {
+                System.err.println("Resource not found: " + resourcePath);
+                return null;
+            }
 
+            Path tempFilePath = Files.createTempFile("ffmpeg", ".exe");
+            Files.copy(inputStream, tempFilePath, StandardCopyOption.REPLACE_EXISTING);
+            File tempFile = tempFilePath.toFile();
+
+            // 设置文件权限为可执行
+            if (!tempFile.setExecutable(true)) {
+                System.err.println("Failed to set executable permission for: " + tempFile.getAbsolutePath());
+            }
+
+            return tempFile;
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
 
 
     /**
