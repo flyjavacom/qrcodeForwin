@@ -123,9 +123,12 @@ public class FileTransferApp extends JFrame {
                                 throw new Exception("文件大小超过7M ，请重新选择！");
                             }
 
-                            appendStatus("开始将文件转成 二维码文件！ " + selectedFile.getName());
+                            appendStatus("开始将文件转成 二维码文件！ " + selectedFile.getName() + " ，文件大小="+ fileSizeInMB + " MB");
                             String res = FileConvertUtil.fileToQrCode(selectedFile.getAbsolutePath());
                             appendStatus("完成将文件转成 二维码文件！ 生成路径：" + res);
+                            appendStatus("开始生成二维码视频！二维码图片路径：" + res);
+                            FFmpegUtil.geneteVideoFromImageDir(res);
+                            appendStatus("完成生成二维码视频！二维码视频路径：" + res);
                             JOptionPane.showMessageDialog(FileTransferApp.this, "完成将文件转成 二维码文件！生成路径："+ res, "处理成功", JOptionPane.INFORMATION_MESSAGE);
 
                         } else {
