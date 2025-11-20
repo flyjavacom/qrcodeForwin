@@ -63,7 +63,7 @@ public class JCodecUtill {
             int totalFrames = videoTrack1.getMeta().getTotalFrames();
             System.out.println(" 获取总帧数getTotalFrames：" + totalFrames);
             // 获取视频的帧率
-            double frameRate = totalFrames / (totalDuration / 1000.0);
+            double frameRate = totalFrames / totalDuration ;
             System.out.println("获取视频的帧率: " +  frameRate);
 
             // 计算一帧的时间长度  以秒为单位
@@ -82,12 +82,17 @@ public class JCodecUtill {
 
                 // 构建输出文件路径
                 String outputPath = outputDirPath + "frame_" + String.format("%04d", frameNumber) + ".png";
-                // 每5帧 保存一张图片  如果30帧的视频 一秒保存6张图片，这样可以减少识别量
-                if( i== 5){
-                    i = 0;
-                    // 保存图像
+                if(frameRate >= 10){
+                    // 每5帧 保存一张图片  如果30帧的视频 一秒保存6张图片，这样可以减少识别量
+                    if( i== 5){
+                        i = 0;
+                        // 保存图像
+                        ImageIO.write(bufferedImage, "png", new File(outputPath));
+                        System.out.println("Extracted frame: " + outputPath);
+                    }
+                }else {
+                    // 每一帧都都要保存图像
                     ImageIO.write(bufferedImage, "png", new File(outputPath));
-
                     System.out.println("Extracted frame: " + outputPath);
                 }
 

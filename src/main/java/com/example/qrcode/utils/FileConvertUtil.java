@@ -18,6 +18,8 @@ import java.util.concurrent.*;
 public class FileConvertUtil {
     private static final int MAX_SEGMENT_SIZE = 1024; // Maximum size of each segment in bytes
     private static final String TEMP_QRCODE_DIR = "/temp_qr_codes/";
+    // 二维码生成名称前缀
+    private static final String QRCODE_NAME_PREFIX ="qr_code_";
 
     //创建一个动态大小为200的线程池
     static ExecutorService executorService = new ThreadPoolExecutor(100,200,60L, TimeUnit.SECONDS,new ArrayBlockingQueue<>(10000));
@@ -43,11 +45,12 @@ public class FileConvertUtil {
     }
 
     /**
-     * 将文件转成 二维码文件  【限制大小在7m 以内，这样生成的二维码个数在9999以内 】
+     * 将文件转成 二维码文件  【限制大小在70m 以内，这样生成的二维码个数在99999以内 】
      * 1.文件转成Base64 字符串  【Base64 编码后大约会变成 1.33 倍大小】  前面10位是文件后缀
-     * 2.将Base64 字符串 按照1024长度取拆分成小字符串  1020原字符串 + 4位当前页码
+     * 2.将Base64 字符串 按照1024长度取拆分成小字符串  1020原字符串 + 5位当前页码
      * 3.小字符串转成二维码图片 ，图片路径在当前文件路径 temp_qr_codes 文件夹下面
      * @param filePath
+     * @return  存储二维码图片路径
      */
     public static String fileToQrCode(String filePath) throws Exception {
         String res = null;
@@ -61,7 +64,7 @@ public class FileConvertUtil {
         // 前面10位是文件后缀
         base64String = fileExtensionForLength10 + base64String;
         // 将文件拆分成小文本
-        String[] segments = splitTextIntoSegments(base64String, 1020); //1024  留4位在首位增加当前4位
+        String[] segments = splitTextIntoSegments(base64String, 1019); //1024  留4-5位在首位
 
         // 获取 Path 对象
         Path pathToFile = Paths.get(filePath);
@@ -70,20 +73,53 @@ public class FileConvertUtil {
         // 存储二维码图片路径
         res = parentPath + TEMP_QRCODE_DIR;
         // 清理一下 存储二维码图片路径里面 旧文件
-        deleteFilesContainingString(new File(res),"qr_code_");
+        FilesUtil.deleteFilesContainingString(new File(res),QRCODE_NAME_PREFIX);
 
+        List<String> todoEncodeList= new ArrayList<>();
+        Map<String,String> map = new HashMap<>();
         // 将文本 ==》 生成二维码图片
         for (int i = 0; i < segments.length; i++) {
 
-            String tempQrcodepath = res + "qr_code_" + i + ".png";
-
+            String tempQrcodepath = res + QRCODE_NAME_PREFIX + i + ".png";
             String segment = segments[i];
             // 页码从0开始
-            String page = String.format("%4d",i);
-            // 文件前面4位是当前页数
+            String page = String.format("%5d",i);
+            // 文件前面5位是当前页数
             segment = page + segment;
-            System.out.println("正在生成QR二维码: 文件路径=" + tempQrcodepath +" 4位页码+1020长度文件内容=" + segment);
-            QRCodeUtil.encode(segment,tempQrcodepath);
+            map.put(tempQrcodepath,segment);
+            todoEncodeList.add(tempQrcodepath);
+        }
+
+        //遍历待处理图片集合
+        // 分批处理（当待处理突破集合大于线程池最大队列容量之后会报RejectedExecutionException）
+        int batchSize = 1000; // 每次提交的任务数量
+        for (int i = 0; i < todoEncodeList.size(); i += batchSize) {
+            int end = Math.min(i + batchSize, todoEncodeList.size());
+            List<String> batch = todoEncodeList.subList(i, end);
+
+            CountDownLatch countDownLatch = new CountDownLatch(batch.size());
+            for (String tempQrcodepath : batch) {
+                executorService.execute(()->{
+                    try {
+                        String segment =map.get(tempQrcodepath);
+                        QRCodeUtil.encode(segment,tempQrcodepath);
+                        System.out.println("正在生成QR二维码: 文件路径=" + tempQrcodepath +" 5位页码+1020长度文件内容=" + segment);
+                    } catch (Exception e) {
+                        System.out.println("使用多线程处理异常"+e.toString());
+                    }finally {
+                        // 计数器加一
+                        countDownLatch.countDown();
+                    }
+
+                });
+            }
+            // 等待所有线程处理完成
+            try {
+                countDownLatch.await();
+            }catch (Exception e){
+                System.out.println("使用多线程处理超时异常"+e.toString());
+            }
+
         }
         return res;
     }
@@ -95,7 +131,7 @@ public class FileConvertUtil {
     public static String qrCode4ToFile(String qrcodeFilePath) throws IOException {
         System.out.println("开始图片二维码解析并生成文件  " + qrcodeFilePath);
         String res = null;
-        Map<Integer,String> pageContentMap = new HashMap<>();
+        Map<Integer,String> pageContentMap = new ConcurrentHashMap<>();
 
         File directory = new File(qrcodeFilePath);
         File[] files = directory.listFiles();
@@ -115,41 +151,51 @@ public class FileConvertUtil {
 
         // 使用多线程处理
 
-        CountDownLatch countDownLatch = new CountDownLatch(todoDecodeFilePathList.size());
+
         //遍历待处理图片集合
-        for (String filepath : todoDecodeFilePathList) {
 
-            executorService.execute(()->{
+        // 分批处理（当待处理突破集合大于线程池最大队列容量之后会报RejectedExecutionException）
+        int batchSize = 1000; // 每次提交的任务数量
+        for (int i = 0; i < todoDecodeFilePathList.size(); i += batchSize) {
+            int end = Math.min(i + batchSize, todoDecodeFilePathList.size());
+            List<String> batch = todoDecodeFilePathList.subList(i, end);
 
-                try {
-                    String  decode = QRCodeUtil.decode(filepath);
-                    System.out.println("正在二维码识别:" + filepath +" 识别结果=" + decode);
-                    // 异常识别结果跳过
-                    if(decode == null || decode.length() < 4){
-                        System.out.println("二维码识别不满足跳过！" + filepath +" 识别结果=" + decode);
-                    }else {
-                        String page = decode.substring(0,4).replace(" ","");
-                        String content = decode.substring(4);
-                        // map 不存在就插入 存在就跳过
-                        if(!pageContentMap.containsKey(Integer.valueOf(page))){
-                            pageContentMap.put(Integer.valueOf(page),content);
+            CountDownLatch countDownLatch = new CountDownLatch(batch.size());
+            for (String filepath : batch) {
+                executorService.execute(()->{
+                    try {
+                        String  decode = QRCodeUtil.decode(filepath);
+                        System.out.println("正在二维码识别:" + filepath +" 识别结果=" + decode);
+                        // 异常识别结果跳过
+                        if(decode == null || decode.length() < 5){
+                            System.out.println("二维码识别不满足跳过！" + filepath +" 识别结果=" + decode);
+                        }else {
+                            // 前面5位作为页码
+                            Integer page = Integer.valueOf(decode.substring(0,5).replace(" ",""));
+                            String content  = decode.substring(5);
+                            // map 不存在就插入 存在就跳过
+                            if(!pageContentMap.containsKey(page)){
+                                pageContentMap.put(page,content);
+                            }
                         }
+                    } catch (Exception e) {
+                        System.out.println("使用多线程处理异常"+e.toString());
+                    }finally {
+                        // 计数器加一
+                        countDownLatch.countDown();
                     }
 
-                } catch (Exception e) {
-                    System.out.println("使用多线程处理异常"+e.toString());
-                }finally {
-                    countDownLatch.countDown();
-                }
+                });
+            }
+            // 等待所有线程处理完成
+            try {
+                countDownLatch.await();
+            }catch (Exception e){
+                System.out.println("使用多线程处理超时异常"+e.toString());
+            }
+        }
 
-            });
-        }
-        // 等待所有线程处理完成
-        try {
-            countDownLatch.await();
-        }catch (Exception e){
-            System.out.println("使用多线程处理超时异常"+e.toString());
-        }
+
 
 
 
@@ -197,42 +243,7 @@ public class FileConvertUtil {
     }
 
 
-    /**
-     * 删除指定文件夹里面 包含特殊字符的文件
-     * @param folder
-     * @param searchString
-     */
-    private static void deleteFilesContainingString(File folder, String searchString) {
 
-        if (!folder.exists()) {
-            return;
-        }
-
-
-        if (!folder.isDirectory()) {
-            throw new IllegalArgumentException("指定路径不是一个文件夹");
-        }
-
-        File[] files = folder.listFiles();
-        if (files == null || files.length == 0) {
-            System.out.println("文件夹为空");
-            return;
-        }
-
-        for (File file : files) {
-            if (file.isFile() && file.getName().contains(searchString)) {
-                try {
-                    if (file.delete()) {
-                        System.out.println("已删除文件: " + file.getName());
-                    } else {
-                        System.out.println("删除文件失败: " + file.getName());
-                    }
-                } catch (SecurityException se) {
-                    System.out.println("删除文件时发生安全异常: " + file.getName() + " - " + se.getMessage());
-                }
-            }
-        }
-    }
 
 
 }

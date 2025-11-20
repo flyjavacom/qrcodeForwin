@@ -35,7 +35,7 @@ public class FileTransferApp extends JFrame {
         setLocationRelativeTo(null);
 
         // 初始化组件
-        uploadFileButton = new JButton("「文件==》二维码图片  上传7M以内文件」");
+        uploadFileButton = new JButton("「文件==》二维码图片  上传70M以内文件」");
         selectFolderButton = new JButton("「二维码图片==》文件]  选择二维码文件夹」");
         uploadVideoButton = new JButton("「二维码视频==》文件]  上传视频文件」");
         fileChooser = new JFileChooser();
@@ -49,7 +49,7 @@ public class FileTransferApp extends JFrame {
                 "说明文档:\n" +
                         " \r\n" +
                         "0.准备条件 无网机器和有网机器需要安装该软件(JDK8)，以及可以拍照录视频的手机。  \r\n" +
-                        "1.[无网机器] 点击按钮【「文件==》二维码图片  上传7M以内文件」】，选择需要传输文件。  \r\n" +
+                        "1.[无网机器] 点击按钮【「文件==》二维码图片  上传70M以内文件」】，选择需要传输文件。  \r\n" +
                         "2.[无网机器] 会在上传文件对应文件夹路径生成 temp_qr_codes 目录，里面存放的就是二维码图片。 \r\n" +
                         " \r\n" +
                         " 【方式1】手机拍照二维码方式  [一张一张拍照，图片需要清晰] \r\n" +
@@ -115,7 +115,7 @@ public class FileTransferApp extends JFrame {
                             selectedFile = fileChooser.getSelectedFile();
                             appendStatus("状态: 已选择文件 " + selectedFile.getName());
 
-                            // 判断文件是否7m 以内
+                            // 判断文件是否70m 以内
                             long fileSizeInBytes = selectedFile.length();
                             double fileSizeInMB = (double) fileSizeInBytes / (1024 * 1024);
                             if (fileSizeInMB > 70) {
@@ -125,6 +125,10 @@ public class FileTransferApp extends JFrame {
 
                             appendStatus("开始将文件转成 二维码文件！ " + selectedFile.getName());
                             String res = FileConvertUtil.fileToQrCode(selectedFile.getAbsolutePath());
+
+                            appendStatus("开始将4个二维码图片合成一个图片和1秒3帧的视频！二维码图片路径 " +res);
+                            String videopath = FFmpegUtil.geneteConcatenatedImageAndVideo(res);
+                            appendStatus("完成将4个二维码图片合成一个图片和1秒3帧的视频！生成合成图片及视频路径 " + videopath);
                             appendStatus("完成将文件转成 二维码文件！ 生成路径：" + res);
                             JOptionPane.showMessageDialog(FileTransferApp.this, "完成将文件转成 二维码文件！生成路径："+ res, "处理成功", JOptionPane.INFORMATION_MESSAGE);
 
@@ -165,6 +169,8 @@ public class FileTransferApp extends JFrame {
                             appendStatus("状态: 已选择文件夹 " + selectedFolder.getAbsolutePath());
 
                             appendStatus("开始 [二维码图片==》文件]！ " + selectedFolder.getName());
+
+
                             String res = FileConvertUtil.qrCode4ToFile(selectedFolder.getAbsolutePath());
                             appendStatus("完成 [二维码图片==》文件]！ 生成路径："+ res);
                             JOptionPane.showMessageDialog(FileTransferApp.this, "完成 [二维码图片==》文件]！生成路径："+ res, "处理成功", JOptionPane.INFORMATION_MESSAGE);
@@ -221,10 +227,11 @@ public class FileTransferApp extends JFrame {
                                 appendStatus("完成 [二维码视频=FFmpeg=》图片]！ " + selectedVideoFile.getName());
                             }
 
-
                             appendStatus("完成 [二维码视频==》按帧截取图片]！ 按帧截取图片输出目录：" + outputDirPath);
-                            appendStatus("开始 [按帧截取图片==》文件]！ 按帧截取图片输出目录：" + outputDirPath);
-                            String res = FileConvertUtil.qrCode4ToFile(outputDirPath);
+                            appendStatus("开始 [按帧截取图片==》拆分成4个图片]！拆分图片输出目录：" + outputDirPath);
+                            String outSplitDirPath = FFmpegUtil.splitImage(outputDirPath);
+                            appendStatus("开始 [拆分图片==》文件]！ 拆分图片输出目录：" + outSplitDirPath);
+                            String res = FileConvertUtil.qrCode4ToFile(outSplitDirPath);
                             appendStatus("完成 [按帧截取图片==》文件]！ " + selectedVideoFile.getName());
                             appendStatus("完成 [二维码视频==》按帧截取图片==》文件]！ 生成路径："+ res);
                             JOptionPane.showMessageDialog(FileTransferApp.this, "完成 [二维码视频==》文件]！生成路径："+ res, "处理成功", JOptionPane.INFORMATION_MESSAGE);
