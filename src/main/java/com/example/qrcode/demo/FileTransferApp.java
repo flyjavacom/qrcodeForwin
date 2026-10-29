@@ -3,6 +3,7 @@ package com.example.qrcode.demo;
 import com.example.qrcode.utils.FFmpegUtil;
 import com.example.qrcode.utils.FileConvertUtil;
 import com.example.qrcode.utils.JCodecUtill;
+import com.example.qrcode.utils.VideoQrDecoder;
 
 import javax.swing.*;
 import java.awt.*;
@@ -21,6 +22,9 @@ public class FileTransferApp extends JFrame {
     private JTextArea descriptionTextArea;
 
     private JTextPane statusTextPane;
+
+    /** 处理进度条 */
+    private JProgressBar progressBar;
 
 
     private JFileChooser fileChooser;
@@ -70,6 +74,11 @@ public class FileTransferApp extends JFrame {
         statusTextPane = new JTextPane();
         statusTextPane.setEditable(false); // 设置为不可编辑
 
+        // 进度条
+        progressBar = new JProgressBar(0, 100);
+        progressBar.setStringPainted(true);
+        progressBar.setString("就绪");
+
 
         // 设置初始行数以控制高度
         FontMetrics fontMetrics = statusTextPane.getFontMetrics(statusTextPane.getFont());
@@ -96,7 +105,12 @@ public class FileTransferApp extends JFrame {
         buttonPanel.add(createButtonRow(uploadVideoButton));
 
         add(buttonPanel, BorderLayout.CENTER);
-        add(statusScrollPane, BorderLayout.SOUTH);
+
+        // 进度条 + 状态日志
+        JPanel bottomPanel = new JPanel(new BorderLayout());
+        bottomPanel.add(progressBar, BorderLayout.NORTH);
+        bottomPanel.add(statusScrollPane, BorderLayout.CENTER);
+        add(bottomPanel, BorderLayout.SOUTH);
 
         // 添加事件监听器
         // [XLS文件==》二维码]  上传XLS文件
@@ -123,6 +137,7 @@ public class FileTransferApp extends JFrame {
                                 throw new Exception("文件大小超过7M ，请重新选择！");
                             }
 
+                            resetProgress("正在生成二维码");
                             appendStatus("开始将文件转成 二维码文件！ " + selectedFile.getName() + " ，文件大小="+ fileSizeInMB + " MB");
                             String res = FileConvertUtil.fileToQrCode(selectedFile.getAbsolutePath());
                             appendStatus("完成将文件转成 二维码文件！ 生成路径：" + res);
@@ -167,6 +182,7 @@ public class FileTransferApp extends JFrame {
                             selectedFolder = fileChooser.getSelectedFile();
                             appendStatus("状态: 已选择文件夹 " + selectedFolder.getAbsolutePath());
 
+                            resetProgress("正在识别二维码图片");
                             appendStatus("开始 [二维码图片==》文件]！ " + selectedFolder.getName());
                             String res = FileConvertUtil.qrCode4ToFile(selectedFolder.getAbsolutePath());
                             appendStatus("完成 [二维码图片==》文件]！ 生成路径："+ res);
@@ -212,24 +228,24 @@ public class FileTransferApp extends JFrame {
                             String videoParent = selectedVideoFile.getParent();
 
                             String outputDirPath = videoParent + "/videoToPic/";
-                            try{
-                                // 使用 JCodec 对视频文件进行按帧进行输出图片，该组件
-                                appendStatus("开始 [二维码视频=JCodec=》图片] 将使用JCodec开源组件进行视频处理！ " + selectedVideoFile.getName());
-                                JCodecUtill.videoToPic(videoPath,outputDirPath );
-                                appendStatus("完成 [二维码视频=JCodec=》图片]！ " + selectedVideoFile.getName());
-                            }catch (Exception exception){
-                                appendStatus("失败 [二维码视频=JCodec=》图片]！将使用ffmpeg开源组件进行视频处理！ " + selectedVideoFile.getName());
-                                appendStatus("开始 [二维码视频=FFmpeg=》图片]！ " + selectedVideoFile.getName());
-                                FFmpegUtil.videoToPic(videoPath,outputDirPath );
-                                appendStatus("完成 [二维码视频=FFmpeg=》图片]！ " + selectedVideoFile.getName());
+                            // 新流程：ffmpeg 直接把裸帧输出到内存边解码边识别，不再落盘几千张 PNG
+                            appendStatus("开始 [二维码视频==》文件] 流式识别（不落盘中间帧）！ " + selectedVideoFile.getName());
+                            resetProgress("准备中");
+                            final String[] resultHolder = new String[1];
+                            try {
+                                resultHolder[0] = VideoQrDecoder.videoToFile(videoPath, outputDirPath,
+                                        VideoQrDecoder.DEFAULT_FPS, (message, percent) -> updateProgress(percent, message));
+                                appendStatus("完成 [二维码视频==》文件]！ 生成路径：" + resultHolder[0]);
+                                updateProgress(100, "完成");
+                            } catch (FileConvertUtil.DataIncompleteException incomplete) {
+                                // 数据不完整是识别结果的问题（缺页等），不能退回老流程，直接告知用户
+                                throw incomplete;
+                            } catch (Exception streamError) {
+                                // 流程性故障才退回老的“先抽帧再识别”方式
+                                appendStatus("流式识别失败：" + streamError.getMessage() + "，将退回 [抽帧==》识别] 方式重试");
+                                resultHolder[0] = fallbackVideoToFile(videoPath, outputDirPath, selectedVideoFile);
                             }
-
-
-                            appendStatus("完成 [二维码视频==》按帧截取图片]！ 按帧截取图片输出目录：" + outputDirPath);
-                            appendStatus("开始 [按帧截取图片==》文件]！ 按帧截取图片输出目录：" + outputDirPath);
-                            String res = FileConvertUtil.qrCode4ToFile(outputDirPath);
-                            appendStatus("完成 [按帧截取图片==》文件]！ " + selectedVideoFile.getName());
-                            appendStatus("完成 [二维码视频==》按帧截取图片==》文件]！ 生成路径："+ res);
+                            String res = resultHolder[0];
                             JOptionPane.showMessageDialog(FileTransferApp.this, "完成 [二维码视频==》文件]！生成路径："+ res, "处理成功", JOptionPane.INFORMATION_MESSAGE);
                         } else {
                             appendStatus("状态: 未选择文件");
@@ -237,8 +253,16 @@ public class FileTransferApp extends JFrame {
                         }
                     }catch (Exception ex){
                         ex.printStackTrace();
-                        appendStatus("异常 [二维码视频==》文件]！ " + ex.toString());
-                        JOptionPane.showMessageDialog(FileTransferApp.this, "异常 [二维码视频==》文件]！ "  + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
+                        if (ex instanceof FileConvertUtil.DataIncompleteException) {
+                            // 缺页等数据不完整问题：不生成文件，明确告知用户缺了哪些页
+                            appendStatus("数据不完整 [二维码视频==》文件]！ " + ex.getMessage());
+                            updateProgress(0, "数据不完整，未生成文件");
+                            JOptionPane.showMessageDialog(FileTransferApp.this, ex.getMessage(), "数据不完整", JOptionPane.WARNING_MESSAGE);
+                        } else {
+                            appendStatus("异常 [二维码视频==》文件]！ " + ex.toString());
+                            updateProgress(0, "处理失败");
+                            JOptionPane.showMessageDialog(FileTransferApp.this, "异常 [二维码视频==》文件]！ "  + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
+                        }
                     }finally {
                         // 开启按钮
                         enableButtons();
@@ -256,6 +280,61 @@ public class FileTransferApp extends JFrame {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER));
         panel.add(button);
         return panel;
+    }
+
+    /**
+     * 更新进度条（线程安全）
+     * @param percent 0-100
+     * @param message 进度说明
+     */
+    private void updateProgress(int percent, String message) {
+        SwingUtilities.invokeLater(() -> {
+            progressBar.setIndeterminate(false);
+            progressBar.setValue(Math.max(0, Math.min(100, percent)));
+            progressBar.setString(percent + "%  " + message);
+        });
+    }
+
+    /**
+     * 重置进度条
+     */
+    private void resetProgress(String message) {
+        SwingUtilities.invokeLater(() -> {
+            progressBar.setIndeterminate(false);
+            progressBar.setValue(0);
+            progressBar.setString(message);
+        });
+    }
+
+    /**
+     * 老流程兜底：先抽帧落盘，再识别
+     */
+    private String fallbackVideoToFile(String videoPath, String outputDirPath, File videoFile) throws Exception {
+        String videoExt = getFileExtension(videoFile.getName()).toLowerCase();
+        // iPhone等设备录制的 .mov 通常是 H.265/HEVC 编码，JCodec只支持H.264必然失败，
+        // 这类格式直接走FFmpeg，避免先白跑一遍JCodec浪费时间
+        boolean jcodecUnsupported = "mov".equals(videoExt) || "hevc".equals(videoExt) || "h265".equals(videoExt);
+        if (jcodecUnsupported) {
+            appendStatus("开始 [二维码视频=FFmpeg=》图片]！(" + videoExt + " 格式JCodec不支持，直接使用FFmpeg) " + videoFile.getName());
+            FFmpegUtil.videoToPic(videoPath, outputDirPath);
+            appendStatus("完成 [二维码视频=FFmpeg=》图片]！ " + videoFile.getName());
+        } else {
+            try {
+                appendStatus("开始 [二维码视频=JCodec=》图片] 将使用JCodec开源组件进行视频处理！ " + videoFile.getName());
+                JCodecUtill.videoToPic(videoPath, outputDirPath);
+                appendStatus("完成 [二维码视频=JCodec=》图片]！ " + videoFile.getName());
+            } catch (Exception exception) {
+                appendStatus("失败 [二维码视频=JCodec=》图片]！将使用ffmpeg开源组件进行视频处理！ " + videoFile.getName());
+                appendStatus("开始 [二维码视频=FFmpeg=》图片]！ " + videoFile.getName());
+                FFmpegUtil.videoToPic(videoPath, outputDirPath);
+                appendStatus("完成 [二维码视频=FFmpeg=》图片]！ " + videoFile.getName());
+            }
+        }
+        appendStatus("开始 [按帧截取图片==》文件]！ 输出目录：" + outputDirPath);
+        String res = FileConvertUtil.qrCode4ToFile(outputDirPath);
+        appendStatus("完成 [按帧截取图片==》文件]！ " + videoFile.getName());
+        updateProgress(100, "完成");
+        return res;
     }
 
     /**

@@ -78,10 +78,353 @@ public class FFmpegUtil {
      * 清理临时文件
      */
     public static  void  clernFFmpeg() {
-        // 删除临时文件
-        if ( tempFFmpeg!=null && !tempFFmpeg.delete()) {
-            System.err.println("Failed to delete temporary file: " + tempFFmpeg.getAbsolutePath());
+        // ffmpeg.exe 已改为固定目录缓存复用，退出时不再删除，下次启动可直接使用
+        tempFFmpeg = null;
+    }
+
+    /**
+     * 获取可执行的 ffmpeg 文件（首次调用时从资源中解压）
+     */
+    public static File getFFmpegFile() {
+        if (tempFFmpeg == null) {
+            tempFFmpeg = initFFmpeg();
         }
+        return tempFFmpeg;
+    }
+
+    /**
+     * 视频基本信息
+     */
+    public static class VideoInfo {
+        /** 画面宽度 */
+        public final int width;
+        /** 画面高度 */
+        public final int height;
+        /** 总时长（秒） */
+        public final double durationSeconds;
+        /** 视频原生帧率，0 表示未解析到 */
+        public final double fps;
+
+        public VideoInfo(int width, int height, double durationSeconds) {
+            this(width, height, durationSeconds, 0);
+        }
+
+        public VideoInfo(int width, int height, double durationSeconds, double fps) {
+            this.width = width;
+            this.height = height;
+            this.durationSeconds = durationSeconds;
+            this.fps = fps;
+        }
+
+        /**
+         * 按指定采样帧率估算总帧数（用于进度和剩余时间估算）
+         */
+        public int estimateFrameCount(int fps) {
+            return Math.max(1, (int) Math.round(durationSeconds * fps));
+        }
+    }
+
+    /**
+     * 读取视频分辨率、总时长（解析 ffmpeg -i 的输出）
+     */
+    public static VideoInfo probeVideo(String videoFilePath) throws IOException, InterruptedException {
+        ProcessBuilder processBuilder = new ProcessBuilder(
+                getFFmpegFile().getAbsolutePath(),
+                "-hide_banner", "-i", videoFilePath);
+        processBuilder.redirectErrorStream(true);
+        Process process = processBuilder.start();
+
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), "UTF-8"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append('\n');
+            }
+        }
+        process.waitFor();
+
+        String text = output.toString();
+        java.util.regex.Matcher durationMatcher =
+                java.util.regex.Pattern.compile("Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)").matcher(text);
+        double duration = 0;
+        if (durationMatcher.find()) {
+            int h = Integer.parseInt(durationMatcher.group(1));
+            int m = Integer.parseInt(durationMatcher.group(2));
+            double s = Double.parseDouble(durationMatcher.group(3));
+            duration = h * 3600 + m * 60 + s;
+        }
+
+        int width = 0;
+        int height = 0;
+        // 在 Video: 那一行里找 宽x高
+        for (String line : text.split("\n")) {
+            if (!line.contains("Video:")) {
+                continue;
+            }
+            java.util.regex.Matcher sizeMatcher =
+                    java.util.regex.Pattern.compile("(\\d{2,5})x(\\d{2,5})").matcher(line);
+            if (sizeMatcher.find()) {
+                width = Integer.parseInt(sizeMatcher.group(1));
+                height = Integer.parseInt(sizeMatcher.group(2));
+                break;
+            }
+        }
+        if (width <= 0 || height <= 0 || duration <= 0) {
+            throw new IOException("无法解析视频信息，可能不是支持的视频文件：" + videoFilePath);
+        }
+        // 原生帧率：采样帧率不能低于它，否则等于主动扔掉画面
+        double fps = 0;
+        java.util.regex.Matcher fpsMatcher =
+                java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*fps").matcher(text);
+        if (fpsMatcher.find()) {
+            try {
+                fps = Double.parseDouble(fpsMatcher.group(1));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        System.out.println("视频信息：分辨率=" + width + "x" + height + " 时长=" + String.format("%.1f", duration)
+                + "秒 帧率=" + (fps > 0 ? String.format("%.2f", fps) : "未知"));
+        return new VideoInfo(width, height, duration, fps);
+    }
+
+    /**
+     * 原始帧回调（8 位灰度数据，每帧 width*height 字节）
+     *
+     * 二维码识别只用亮度信息，所以直接让 ffmpeg 输出灰度：
+     * 1080p 一帧 2MB 而不是 6MB，管道流量和内存拷贝都降到 1/3。
+     */
+    public interface RawFrameHandler {
+        void onFrame(byte[] grayData, int width, int height, int frameIndex);
+    }
+
+    /**
+     * 进度回调
+     */
+    public interface ProgressListener {
+        void onProgress(int processedFrames, int totalFrames, long etaMillis);
+    }
+
+    /**
+     * 流式读取参数
+     */
+    public static class RawFrameOptions {
+        /** 采样帧率 */
+        public final int fps;
+        /** 起始时间（秒） */
+        public double startSeconds = 0;
+        /** 读取时长（秒），小于等于 0 表示读到结尾 */
+        public double durationSeconds = -1;
+        /** 输出最大宽度，0 表示保持原始分辨率；高度按比例缩放 */
+        public int maxWidth = 0;
+        /** 是否尝试 GPU 硬解（不支持时自动退回软件解码） */
+        public boolean hardwareDecode = true;
+
+        public RawFrameOptions(int fps) {
+            this.fps = fps;
+        }
+
+        public RawFrameOptions from(double start, double duration) {
+            this.startSeconds = start;
+            this.durationSeconds = duration;
+            return this;
+        }
+
+        public RawFrameOptions maxWidth(int width) {
+            this.maxWidth = width;
+            return this;
+        }
+
+        public RawFrameOptions hardwareDecode(boolean enabled) {
+            this.hardwareDecode = enabled;
+            return this;
+        }
+    }
+
+    /**
+     * GPU 硬解可用性缓存：按视频探测一次，避免每次读取都试
+     */
+    private static final java.util.Map<String, Boolean> HW_ACCEL_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 丢弃子进程输出的 Java 8 写法。
+     * ProcessBuilder.Redirect.DISCARD 是 Java 9 才有的常量，本项目编译级别是 8，
+     * 直接用会报"找不到符号: 变量 DISCARD"，所以改成重定向到系统空设备。
+     */
+    private static ProcessBuilder.Redirect discard() {
+        String os = System.getProperty("os.name", "");
+        File nullDevice = new File(os.toLowerCase(java.util.Locale.ROOT).contains("win") ? "NUL" : "/dev/null");
+        return ProcessBuilder.Redirect.to(nullDevice);
+    }
+
+    /**
+     * 探测 GPU 硬解是否可用（d3d11va 会把解码放到显卡上，HEVC 10bit 1080p 实测快 1.7 倍）
+     */
+    private static boolean isHardwareDecodeUsable(String videoFilePath) {
+        Boolean cached = HW_ACCEL_CACHE.get(videoFilePath);
+        if (cached != null) {
+            return cached;
+        }
+        boolean usable = false;
+        Process process = null;
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                    getFFmpegFile().getAbsolutePath(),
+                    "-hide_banner", "-loglevel", "error", "-nostdin",
+                    "-hwaccel", "d3d11va",
+                    "-i", videoFilePath,
+                    "-t", "1",
+                    "-f", "null", "-");
+            pb.redirectError(discard());
+            pb.redirectOutput(discard());
+            process = pb.start();
+            usable = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS) && process.exitValue() == 0;
+        } catch (Exception e) {
+            usable = false;
+        } finally {
+            if (process != null) {
+                process.destroy();
+            }
+        }
+        System.out.println("GPU 硬解（d3d11va）" + (usable ? "可用，将使用硬件解码" : "不可用，改用软件解码"));
+        HW_ACCEL_CACHE.put(videoFilePath, usable);
+        return usable;
+    }
+
+    /**
+     * 流式读取视频帧：由 ffmpeg 直接输出裸灰度数据到管道，不再落盘生成图片。
+     * 相比"先抽成几千张 PNG 再读回来识别"，省掉了 PNG 编码、写盘、读盘、解码的全部开销。
+     *
+     * @param handler  帧回调（数据缓冲区会被复用，回调里如需保留必须自行拷贝）
+     * @param listener 进度回调，可为 null
+     * @return 实际读取到的帧数
+     */
+    public static int streamRawFrames(String videoFilePath, VideoInfo info, RawFrameOptions options,
+                                      RawFrameHandler handler, ProgressListener listener)
+            throws IOException, InterruptedException {
+        boolean hw = options.hardwareDecode && isHardwareDecodeUsable(videoFilePath);
+        int frames = streamRawFrames(videoFilePath, info, options, hw, handler, listener);
+        if (frames == 0 && hw) {
+            // 硬解中途失败（驱动/显存问题）时退回软件解码再试一次
+            System.out.println("GPU 硬解读取失败，退回软件解码重试");
+            HW_ACCEL_CACHE.put(videoFilePath, Boolean.FALSE);
+            frames = streamRawFrames(videoFilePath, info, options, false, handler, listener);
+        }
+        return frames;
+    }
+
+    private static int streamRawFrames(String videoFilePath, VideoInfo info, RawFrameOptions options,
+                                       boolean hardwareDecode,
+                                       RawFrameHandler handler, ProgressListener listener)
+            throws IOException, InterruptedException {
+
+        int fps = options.fps;
+        double startSeconds = options.startSeconds;
+        double durationSeconds = options.durationSeconds;
+
+        // 输出分辨率：限制最大宽度，高度按比例并保证偶数（H.264/HEVC 要求偶数尺寸）
+        int outWidth = info.width;
+        int outHeight = info.height;
+        if (options.maxWidth > 0 && info.width > options.maxWidth) {
+            outWidth = options.maxWidth % 2 == 0 ? options.maxWidth : options.maxWidth - 1;
+            outHeight = (int) Math.round(info.height * (outWidth / (double) info.width));
+            if (outHeight % 2 != 0) {
+                outHeight--;
+            }
+        }
+
+        double window = (durationSeconds > 0) ? durationSeconds : Math.max(0, info.durationSeconds - startSeconds);
+        int totalFrames = Math.max(1, (int) Math.round(window * fps));
+
+        StringBuilder filters = new StringBuilder("fps=").append(fps);
+        if (outWidth != info.width) {
+            // 识别只需要二维码模块清晰；缩到 1152 宽后 Boofcv 检测快 5 倍以上，成功率不降
+            // （实测 1080p：原始 97ms/帧 → 1152 宽 17ms/帧）
+            filters.append(",scale=").append(outWidth).append(':').append(outHeight)
+                   .append(":flags=bilinear");
+        }
+
+        java.util.List<String> cmd = new java.util.ArrayList<>();
+        cmd.add(getFFmpegFile().getAbsolutePath());
+        cmd.add("-hide_banner");
+        cmd.add("-loglevel");
+        cmd.add("error");
+        cmd.add("-nostdin");
+        if (hardwareDecode) {
+            cmd.add("-hwaccel");
+            cmd.add("d3d11va");
+        }
+        if (startSeconds > 0) {
+            // 输入侧 seek：先跳到最近的关键帧再解码丢弃，速度快且输出时间点准确
+            cmd.add("-ss");
+            cmd.add(String.format(java.util.Locale.ROOT, "%.3f", startSeconds));
+        }
+        if (durationSeconds > 0) {
+            cmd.add("-t");
+            cmd.add(String.format(java.util.Locale.ROOT, "%.3f", durationSeconds));
+        }
+        cmd.add("-i");
+        cmd.add(videoFilePath);
+        cmd.add("-vf");
+        cmd.add(filters.toString());
+        cmd.add("-f");
+        cmd.add("rawvideo");
+        cmd.add("-pix_fmt");
+        cmd.add("gray");
+        cmd.add("-");
+
+        int frameSize = outWidth * outHeight;
+        int w = outWidth;
+        int h = outHeight;
+
+        ProcessBuilder processBuilder = new ProcessBuilder(cmd);
+        processBuilder.redirectError(discard());
+        Process process = processBuilder.start();
+
+        long startTime = System.currentTimeMillis();
+        int frameIndex = 0;
+        byte[] buffer = new byte[frameSize];
+        // 注意：Windows 管道上大块读取反而极慢（实测 4MB 缓冲只有 19MB/s，64KB 能到 300MB/s+），
+        // 所以这里用小块循环读满一帧
+        try (InputStream in = process.getInputStream()) {
+            while (true) {
+                int read = readFully(in, buffer);
+                if (read < frameSize) {
+                    break;
+                }
+                handler.onFrame(buffer, w, h, frameIndex);
+                frameIndex++;
+
+                if (listener != null && (frameIndex % 5 == 0 || frameIndex == totalFrames)) {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    long eta = 0;
+                    if (frameIndex > 0 && frameIndex < totalFrames) {
+                        eta = elapsed * (totalFrames - frameIndex) / frameIndex;
+                    }
+                    listener.onProgress(frameIndex, totalFrames, eta);
+                }
+            }
+        } finally {
+            process.destroy();
+        }
+        process.waitFor();
+        return frameIndex;
+    }
+
+    /**
+     * 读满一个缓冲区的数据（管道可能分多次返回）
+     * 单次读取限制在 64KB：Windows 管道大块读会严重掉速
+     */
+    private static int readFully(InputStream in, byte[] buffer) throws IOException {
+        int offset = 0;
+        final int maxChunk = 64 * 1024;
+        while (offset < buffer.length) {
+            int read = in.read(buffer, offset, Math.min(maxChunk, buffer.length - offset));
+            if (read < 0) {
+                break;
+            }
+            offset += read;
+        }
+        return offset;
     }
 
 
@@ -106,10 +449,13 @@ public class FFmpegUtil {
                 tempFFmpeg = initFFmpeg();
             }
             // 构建FFmpeg命令
+            // -hide_banner -loglevel error：减少控制台输出，逐行打印FFmpeg日志本身也有不小的开销
+            // fps=15：每秒提取15帧
             ProcessBuilder processBuilder = new ProcessBuilder(
                     "\"" +  tempFFmpeg.getAbsolutePath() + "\"",
+                    "-hide_banner", "-loglevel", "error",
                     "-i", videoFilePath,
-                    "-vf", "fps=6",  // 每秒提取6帧
+                    "-vf", "fps=15",  // 每秒提取15帧
                     outputDirPath + "frame_%04d.png"
             );
             Process process = processBuilder.start();
@@ -140,7 +486,19 @@ public class FFmpegUtil {
                 return null;
             }
 
-            Path tempFilePath = Files.createTempFile("ffmpeg", ".exe");
+            // 缓存到固定目录复用：ffmpeg.exe 有 90MB+，每次启动都从 jar 解压要花 20 秒
+            Path cacheDir = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"), "qrcode-forwin");
+            Files.createDirectories(cacheDir);
+            Path cacheFile = cacheDir.resolve("ffmpeg.exe");
+            long resourceSize = inputStream.available();
+            if (Files.exists(cacheFile) && Files.size(cacheFile) > 1024 * 1024
+                    && (resourceSize <= 0 || Files.size(cacheFile) >= resourceSize * 0.95)) {
+                File cached = cacheFile.toFile();
+                cached.setExecutable(true);
+                return cached;
+            }
+
+            Path tempFilePath = cacheFile;
             Files.copy(inputStream, tempFilePath, StandardCopyOption.REPLACE_EXISTING);
             File tempFile = tempFilePath.toFile();
 
@@ -380,7 +738,16 @@ public class FFmpegUtil {
             // 按文件名排序
             Collections.sort(imageFiles);
             // 写入 concatenated_file_list.txt
+            // 注意：开头把第一张图多重复两次（约1秒），给"录制开始偏晚"留出余量，
+            // 否则第0页（文件头所在页）一旦没录到，整个文件都无法还原
             try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
+                if (!imageFiles.isEmpty()) {
+                    File first = imageFiles.get(0);
+                    for (int i = 0; i < 2; i++) {
+                        writer.write("file '" + first.getAbsolutePath().replace("\\", "\\\\") + "'");
+                        writer.newLine();
+                    }
+                }
                 for (File file : imageFiles) {
                     writer.write("file '" + file.getAbsolutePath().replace("\\", "\\\\") + "'");
                     writer.newLine();

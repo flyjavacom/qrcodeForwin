@@ -36,3 +36,5 @@ build/
 
 ### Mac OS ###
 .DS_Store
+### WorkBuddy 本地工作区数据（不提交）
+.workbuddy/
