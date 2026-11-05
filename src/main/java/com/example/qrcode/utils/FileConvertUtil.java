@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.*;
@@ -179,6 +180,67 @@ public class FileConvertUtil {
         }
 
         return buildFileFromPages(qrcodeFilePath, collector.getPageContentMap(), collector.getConflictCount());
+    }
+
+    /**
+     * 保存视频中成功识别到的页为标准二维码图片，并生成缺页清单。
+     * 输出图片可与后续补拍图片放在同一目录，直接交给 qrCode4ToFile 合并解析。
+     */
+    public static RecoveryInfo saveVideoRecoveryFiles(String outputDirPath,
+                                                       Map<Integer, String> pageContentMap) throws IOException {
+        Path recoveryDir = Paths.get(outputDirPath, "recognized_qr");
+        Files.createDirectories(recoveryDir);
+        List<Integer> pages = new ArrayList<>(pageContentMap.keySet());
+        Collections.sort(pages);
+        List<Integer> missingPages = new ArrayList<>();
+        if (!pages.isEmpty()) {
+            int maxPage = pages.get(pages.size() - 1);
+            for (int i = 0; i <= maxPage; i++) {
+                if (!pageContentMap.containsKey(i)) {
+                    missingPages.add(i);
+                }
+            }
+        }
+
+        for (Integer page : pages) {
+            String payload = pageContentMap.get(page);
+            String pagePrefix = String.format(Locale.ROOT, "%4d", page);
+            QRCodeUtil.encode(pagePrefix + payload,
+                    recoveryDir.resolve(QRCODE_NAME_PREFIX + page + ".png").toString());
+        }
+
+        StringBuilder report = new StringBuilder();
+        List<Integer> pagesThroughMax = new ArrayList<>();
+        if (!pages.isEmpty()) {
+            for (int i = 0; i <= pages.get(pages.size() - 1); i++) {
+                pagesThroughMax.add(i);
+            }
+        }
+        report.append("视频二维码识别恢复清单\n")
+                .append("已识别页数：").append(pages.size()).append("\n")
+                .append("已识别页码：").append(pages.isEmpty() ? "无" : joinPages(pagesThroughMax)).append("\n")
+                .append("内部缺页（从0到最大已识别页）：")
+                .append(missingPages.isEmpty() ? "无" : joinPages(missingPages)).append("\n")
+                .append("注意：视频没有提供源文件总页数，无法判断最大已识别页之后是否还缺尾页。\n")
+                .append("请将补拍的二维码照片放入本目录，然后使用“二维码图片==》文件”选择本目录解析。\n")
+                .append("目录：").append(recoveryDir.toAbsolutePath()).append("\n");
+        Path reportPath = Paths.get(outputDirPath, "missing_pages.txt");
+        Files.write(reportPath, report.toString().getBytes(StandardCharsets.UTF_8));
+        return new RecoveryInfo(recoveryDir.toString(), reportPath.toString(), missingPages, pages.size());
+    }
+
+    public static final class RecoveryInfo {
+        public final String recoveryDir;
+        public final String reportPath;
+        public final List<Integer> missingPages;
+        public final int recognizedPageCount;
+
+        RecoveryInfo(String recoveryDir, String reportPath, List<Integer> missingPages, int recognizedPageCount) {
+            this.recoveryDir = recoveryDir;
+            this.reportPath = reportPath;
+            this.missingPages = Collections.unmodifiableList(new ArrayList<>(missingPages));
+            this.recognizedPageCount = recognizedPageCount;
+        }
     }
 
     /**

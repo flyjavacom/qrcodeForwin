@@ -107,6 +107,8 @@ public class VideoQrDecoder {
         }
         // 采样帧率不能低于视频原生帧率，否则等于主动扔掉画面（每页只停留 200ms，少采就是丢页）
         int sampleFps = resolveSampleFps(fps, info);
+        report(listener, "视频信息：" + info.width + "x" + info.height + "，时长 "
+                + formatDuration((long) (info.durationSeconds * 1000)) + "，采样帧率 " + sampleFps + " fps", 2);
 
         // 每页出现的时间点：页号 -> [首次时间, 末次时间]，缺页定向补采靠它定位
         final Map<Integer, double[]> pageTimes = new ConcurrentHashMap<>();
@@ -119,6 +121,7 @@ public class VideoQrDecoder {
         List<Integer> notRecordedPages = new ArrayList<>();
         if (!missingPages.isEmpty()) {
             System.out.println("第一遍识别后有 " + missingPages.size() + " 页缺失：" + missingPages);
+            report(listener, "首轮识别发现 " + missingPages.size() + " 页缺失：" + missingPages, 70);
             if (missingPages.size() > MAX_TARGETED_PAGES) {
                 System.out.println("缺失页数过多（" + missingPages.size() + "），不做逐页定向补采。"
                         + "通常说明视频画质太差（例如经过聊天工具压缩）或录制漏拍严重。");
@@ -132,6 +135,7 @@ public class VideoQrDecoder {
                             listener, "精修", 70, 96, 0);
                     missingPages = findMissingPages(collector.getPageContentMap());
                     System.out.println("精修后仍缺 " + missingPages.size() + " 页");
+                    report(listener, "原始分辨率精修后仍缺 " + missingPages.size() + " 页：" + missingPages, 96);
                 }
             } else {
                 if (listener != null) {
@@ -143,9 +147,14 @@ public class VideoQrDecoder {
             }
             if (!notRecordedPages.isEmpty()) {
                 System.out.println("以下页在视频里根本没有出现（录制时漏拍，无法通过识别恢复）：" + notRecordedPages);
+                report(listener, "视频中未发现以下页面（可能漏拍）：" + notRecordedPages, 97);
             }
             if (!missingPages.isEmpty()) {
                 System.out.println("补采后仍缺 " + missingPages.size() + " 页");
+                report(listener, "视频解析后仍缺 " + missingPages.size() + " 页：" + missingPages, 97);
+            }
+            if (missingPages.isEmpty()) {
+                report(listener, "视频内 0 至最大已识别页码之间没有缺页。视频无法推断最大页码之后的尾页是否缺失。", 97);
             }
         }
 
@@ -155,8 +164,23 @@ public class VideoQrDecoder {
         System.out.println("识别总耗时 " + formatDuration(System.currentTimeMillis() - startTime)
                 + "，共识别 " + collector.size() + " 页");
 
+        FileConvertUtil.RecoveryInfo recovery = FileConvertUtil.saveVideoRecoveryFiles(
+                outputDirPath, collector.getPageContentMap());
+        report(listener, "恢复二维码已保存 " + recovery.recognizedPageCount + " 页到：" + recovery.recoveryDir, 99);
+        report(listener, "缺页清单已保存到：" + recovery.reportPath, 99);
+        report(listener, "可将补拍照片放入 recognized_qr 文件夹，再用“二维码图片==》文件”处理该文件夹。", 99);
+        if (listener != null) {
+            listener.onProgress("已保存已识别二维码至 " + recovery.recoveryDir
+                    + "，缺页清单：" + recovery.reportPath, 99);
+        }
         return FileConvertUtil.buildFileFromPages(outputDirPath, collector.getPageContentMap(),
                 collector.getConflictCount(), notRecordedPages);
+    }
+
+    private static void report(ProgressListener listener, String message, int percent) {
+        if (listener != null) {
+            listener.onProgress(message, percent);
+        }
     }
 
     /**

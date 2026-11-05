@@ -64,8 +64,11 @@ public class FileTransferApp extends JFrame {
                         " 【方式2】手机拍二维码视频方式  [建议视频清晰情况下图片翻页速度可以快，例如一秒2张，一秒3张]\r\n" +
                         "4.1.[有网机器] 通过手机录像+传输工具将视频存在本电脑一个文件夹里面。 推荐网页版微信文件传输助手传输视频！ \r\n" +
                         "4.2.[有网机器] 点击按钮【「二维码视频==》文件]  上传视频文件」】，选择录有二维码的视频，\r\n" +
-                        "4.2.[有网机器] 会在上传视频文件对应文件夹路径生成 videoToPic 目录,里面按帧存放视频图片。  \r\n"+
-                        "4.2.[有网机器] 会在 videoToPic 路径生成解析后的文件。 \r\n"
+                        "4.2.[有网机器] 会在上传视频文件对应文件夹路径生成 videoToPic 目录。  \r\n"+
+                        "4.3.[有网机器] 成功识别的二维码页保存在 videoToPic/recognized_qr，缺页清单保存在 videoToPic/missing_pages.txt。\r\n"+
+                        "4.4.[有网机器] 将补拍的缺页照片放入 recognized_qr，再用「二维码图片==》文件」选择 recognized_qr 文件夹解析。\r\n"+
+                        "注意：视频本身不能提供原文件总页数，清单能列出0至最大已识别页之间的缺页，不能推断末尾漏掉多少页。\r\n"+
+                        "4.5.[有网机器] 页码补齐后，会在 videoToPic 路径生成解析后的文件。 \r\n"
         );
         JScrollPane scrollPane = new JScrollPane(descriptionTextArea);
 
@@ -229,13 +232,30 @@ public class FileTransferApp extends JFrame {
 
                             String outputDirPath = videoParent + "/videoToPic/";
                             // 新流程：ffmpeg 直接把裸帧输出到内存边解码边识别，不再落盘几千张 PNG
-                            appendStatus("开始 [二维码视频==》文件] 流式识别（不落盘中间帧）！ " + selectedVideoFile.getName());
+                            appendStatus("开始 [二维码视频==》文件] 流式识别（不落盘中间帧，识别页将另存为二维码图片）！ " + selectedVideoFile.getName());
+                            appendStatus("视频输出目录：" + new File(outputDirPath).getAbsolutePath());
                             resetProgress("准备中");
                             final String[] resultHolder = new String[1];
+                            final int[] lastLoggedProgressBucket = {-1};
                             try {
                                 resultHolder[0] = VideoQrDecoder.videoToFile(videoPath, outputDirPath,
-                                        VideoQrDecoder.DEFAULT_FPS, (message, percent) -> updateProgress(percent, message));
+                                        VideoQrDecoder.DEFAULT_FPS, (message, percent) -> {
+                                            updateProgress(percent, message);
+                                            int bucket = percent / 10;
+                                            boolean importantEvent = message.contains("缺")
+                                                    || message.contains("保存")
+                                                    || message.contains("清单")
+                                                    || message.contains("补拍")
+                                                    || message.contains("分辨率")
+                                                    || message.contains("视频信息")
+                                                    || message.contains("未发现");
+                                            if (importantEvent || bucket > lastLoggedProgressBucket[0]) {
+                                                lastLoggedProgressBucket[0] = Math.max(bucket, lastLoggedProgressBucket[0]);
+                                                appendStatus("[视频解析 " + percent + "%] " + message);
+                                            }
+                                        });
                                 appendStatus("完成 [二维码视频==》文件]！ 生成路径：" + resultHolder[0]);
+                                appendStatus("已识别二维码页保存在：" + outputDirPath + "/recognized_qr；缺页清单：" + outputDirPath + "/missing_pages.txt");
                                 updateProgress(100, "完成");
                             } catch (FileConvertUtil.DataIncompleteException incomplete) {
                                 // 数据不完整是识别结果的问题（缺页等），不能退回老流程，直接告知用户
@@ -342,19 +362,18 @@ public class FileTransferApp extends JFrame {
      * @param message
      */
     private void appendStatus(String message) {
-        String currentText = statusTextPane.getText();
-        if (!currentText.isEmpty()) {
-            currentText += "\n";
-        }
-        // 时间
-        String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ").format(new Date());
-
-        String timestampAndMessage =timestamp + message;
-        currentText += timestampAndMessage ;
-        System.out.println(currentText);
-        statusTextPane.setText(currentText);
-        // 自动滚动到底部
-        statusTextPane.setCaretPosition(statusTextPane.getDocument().getLength());
+        SwingUtilities.invokeLater(() -> {
+            String currentText = statusTextPane.getText();
+            if (!currentText.isEmpty()) {
+                currentText += "\n";
+            }
+            String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ").format(new Date());
+            String timestampAndMessage = timestamp + message;
+            currentText += timestampAndMessage;
+            System.out.println(timestampAndMessage);
+            statusTextPane.setText(currentText);
+            statusTextPane.setCaretPosition(statusTextPane.getDocument().getLength());
+        });
     }
 
 
