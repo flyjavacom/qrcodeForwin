@@ -3,7 +3,6 @@ package com.example.qrcode.utils;
 
 import com.google.zxing.*;
 import com.google.zxing.client.j2se.BufferedImageLuminanceSource;
-import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.qrcode.QRCodeReader;
@@ -32,11 +31,21 @@ public class QRCodeUtilForZxing {
      * @param filePath
      */
     public static void encode(String contents, String filePath) throws IOException, WriterException {
+        BufferedImage image = encodeToImage(contents);
+        ImageIO.write(image, "png", new File(filePath));
+    }
+
+    public static BufferedImage encodeToImage(String contents) throws WriterException {
         Map<EncodeHintType, Object> hints = new HashMap<>();
         hints.put(EncodeHintType.CHARACTER_SET, "UTF-8");
-        File outputFile = new File(filePath);
         BitMatrix bitMatrix = new MultiFormatWriter().encode(contents, BarcodeFormat.QR_CODE, 500, 500, hints);
-        MatrixToImageWriter.writeToPath(bitMatrix, "PNG", outputFile.toPath());
+        BufferedImage image = new BufferedImage(bitMatrix.getWidth(), bitMatrix.getHeight(), BufferedImage.TYPE_INT_RGB);
+        for (int x = 0; x < bitMatrix.getWidth(); x++) {
+            for (int y = 0; y < bitMatrix.getHeight(); y++) {
+                image.setRGB(x, y, bitMatrix.get(x, y) ? BLACK : WHITE);
+            }
+        }
+        return image;
     }
     /**
      *  生成QRCode二维码<br>

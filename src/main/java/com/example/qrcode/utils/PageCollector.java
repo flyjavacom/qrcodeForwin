@@ -1,9 +1,13 @@
 package com.example.qrcode.utils;
 
 import java.util.Collections;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 二维码识别结果收集器
@@ -26,6 +30,9 @@ public class PageCollector {
 
     /** 成功收下的识别结果数（含重复页） */
     private final AtomicInteger acceptedCount = new AtomicInteger(0);
+    /** Optional file-level integrity record used by four-QR frames. */
+    private volatile TransferManifest manifest;
+    private final AtomicBoolean multiQrFrame = new AtomicBoolean(false);
 
     /**
      * 从识别结果里解析页码（前4位）
@@ -37,7 +44,8 @@ public class PageCollector {
             return null;
         }
         try {
-            return Integer.parseInt(decode.substring(0, PAGE_PREFIX_LENGTH).replace(" ", ""));
+            int page = Integer.parseInt(decode.substring(0, PAGE_PREFIX_LENGTH).replace(" ", ""));
+            return page >= 0 && page <= 9999 ? page : null;
         } catch (NumberFormatException e) {
             return null;
         }
@@ -51,6 +59,22 @@ public class PageCollector {
      */
     public boolean accept(String decode, String source) {
         if (decode == null || decode.length() <= PAGE_PREFIX_LENGTH) {
+            return false;
+        }
+        if (decode.startsWith(TransferManifest.PREFIX)) {
+            try {
+                TransferManifest parsed = TransferManifest.parse(decode);
+                synchronized (this) {
+                    if (manifest == null) {
+                        manifest = parsed;
+                    } else if (!manifest.toPayload().equals(parsed.toPayload())) {
+                        conflictCount.incrementAndGet();
+                        System.out.println("警告：发现互相冲突的文件传输清单，保留首次清单 " + source);
+                    }
+                }
+            } catch (IllegalArgumentException e) {
+                System.out.println("传输清单无效，跳过！" + source + " 原因=" + e.getMessage());
+            }
             return false;
         }
         Integer page = parsePage(decode);
@@ -72,6 +96,77 @@ public class PageCollector {
             System.out.println("警告：第" + page + "页识别出不同内容，保留首次识别结果 " + source);
         }
         return true;
+    }
+
+    /**
+     * 原子接收一张图片/视频帧解出的二维码。
+     * 四码模式要求该帧预期的连续页全部解出且内容有效，否则一页也不写入；
+     * 清单控制帧只接收清单，不把重复展示的第 0 页作为数据页。
+     *
+     * @return 本帧接受的页码；若是清单帧或四码不完整则返回空列表
+     */
+    public synchronized List<Integer> acceptFrame(List<String> decoded, String source) {
+        if (decoded == null || decoded.isEmpty()) {
+            return Collections.emptyList();
+        }
+        boolean hasManifest = false;
+        Map<Integer, String> framePages = new TreeMap<>();
+        for (String text : decoded) {
+            if (text != null && text.startsWith(TransferManifest.PREFIX)) {
+                accept(text, source);
+                hasManifest = true;
+                continue;
+            }
+            Integer page = parsePage(text);
+            if (page != null && text.length() > 4) {
+                framePages.put(page, text);
+            }
+        }
+
+        if (hasManifest) {
+            if (decoded.size() > 1) {
+                markMultiQrFrame();
+            }
+            if (!framePages.isEmpty()) {
+                System.out.println("[四码帧] " + source + " 为清单控制帧，忽略其中重复的数据页展示。");
+            }
+            return Collections.emptyList();
+        }
+
+        boolean multiFrame = decoded.size() > 1 || hasMultiQrFrame();
+        if (decoded.size() > 1) {
+            markMultiQrFrame();
+        }
+        if (framePages.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        if (multiFrame) {
+            int groupStart = (framePages.keySet().iterator().next() / 4) * 4;
+            TransferManifest fileManifest = manifest;
+            int expectedCount = fileManifest == null ? 4
+                    : Math.min(4, Math.max(0, fileManifest.totalPages - groupStart));
+            boolean complete = expectedCount > 0 && framePages.size() == expectedCount;
+            for (int i = 0; complete && i < expectedCount; i++) {
+                String text = framePages.get(groupStart + i);
+                complete = text != null && isValidSegmentContent(text.substring(4));
+            }
+            if (!complete) {
+                System.out.println("[四码帧] " + source + " 只解出 " + framePages.size()
+                        + "/" + expectedCount + " 个应有二维码（页组 " + groupStart + "~"
+                        + (groupStart + Math.max(0, expectedCount - 1))
+                        + "），本帧数据整组丢弃，不与其它帧拼凑。");
+                return Collections.emptyList();
+            }
+        }
+
+        List<Integer> acceptedPages = new ArrayList<>();
+        for (Map.Entry<Integer, String> entry : framePages.entrySet()) {
+            if (accept(entry.getValue(), source)) {
+                acceptedPages.add(entry.getKey());
+            }
+        }
+        return acceptedPages;
     }
 
     /**
@@ -111,5 +206,26 @@ public class PageCollector {
 
     public boolean isEmpty() {
         return pageContentMap.isEmpty();
+    }
+
+    public TransferManifest getManifest() {
+        return manifest;
+    }
+
+    public synchronized void markMultiQrFrame() {
+        if (multiQrFrame.compareAndSet(false, true)) {
+            int discardedPages = pageContentMap.size();
+            pageContentMap.clear();
+            acceptedCount.set(0);
+            conflictCount.set(0);
+            if (discardedPages > 0) {
+                System.out.println("[四码帧] 已切换到四码整帧校验，清除此前按单码暂存的 "
+                        + discardedPages + " 页，避免把不同图片的部分结果拼在一起。");
+            }
+        }
+    }
+
+    public boolean hasMultiQrFrame() {
+        return multiQrFrame.get();
     }
 }

@@ -1,424 +1,810 @@
 package com.example.qrcode.demo;
 
-import com.example.qrcode.utils.FFmpegUtil;
 import com.example.qrcode.utils.FileConvertUtil;
-import com.example.qrcode.utils.JCodecUtill;
+import com.example.qrcode.utils.FourQrFrameComposer;
 import com.example.qrcode.utils.VideoQrDecoder;
 
-import javax.swing.*;
-import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.BorderFactory;
+import javax.swing.JButton;
+import javax.swing.JDialog;
+import javax.swing.JFileChooser;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JProgressBar;
+import javax.swing.JTextField;
+import javax.swing.JSpinner;
+import javax.swing.SpinnerNumberModel;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
+import javax.swing.JTextPane;
+import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
+import javax.swing.UIManager;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.Document;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Desktop;
+import java.awt.Font;
+import java.awt.GridLayout;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Window;
+import java.awt.Toolkit;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.function.Consumer;
 
+/** Swing front end for legacy single-QR and new four-QR image workflows. */
 public class FileTransferApp extends JFrame {
+    private static final int MAX_STATUS_CHARACTERS = 30000;
+    private static final Color BACKGROUND = new Color(0xF3F6FA);
+    private static final Color SURFACE = Color.WHITE;
+    private static final Color TEXT = new Color(0x182230);
+    private static final Color MUTED = new Color(0x637083);
+    private static final Color ACCENT = new Color(0x1769AA);
+    private static final Color BORDER = new Color(0xE0E7EF);
 
-    private JButton uploadFileButton;
-    private JButton uploadVideoButton;
-    private JButton selectFolderButton;
-
-    private JTextArea descriptionTextArea;
-
-    private JTextPane statusTextPane;
-
-    /** 处理进度条 */
-    private JProgressBar progressBar;
-
-
-    private JFileChooser fileChooser;
-    private File selectedFile;
-    private File selectedFolder;
-    private File selectedVideoFile;
+    private final JButton uploadFileButton = new JButton("选择文件并生成四码图片");
+    private final JButton selectFolderButton = new JButton("从二维码图片恢复");
+    private final JButton uploadVideoButton = new JButton("从二维码视频恢复");
+    private final JButton playGeneratedImagesButton = new JButton("播放图片");
+    private final JButton openGeneratedFolderButton = new JButton("打开文件夹");
+    private final JButton openReceivedFolderButton = new JButton("打开文件夹");
+    private final JTextField generatedFramesPathField = new JTextField("尚未生成四码图片");
+    private final JTextField receivedFilePathField = new JTextField("尚未解析文件");
+    private final JTextPane statusTextPane = new JTextPane();
+    private final JProgressBar progressBar = new JProgressBar(0, 100);
+    private final JFileChooser fileChooser = new JFileChooser();
+    private final JTextArea taskLabel = wrappedTextArea("准备就绪", 2, 12);
+    private final TransferAppSettings settings = TransferAppSettings.load();
 
     public FileTransferApp() {
-        setTitle("文件传输工具（无网机器==>有网机器）  --学习交流工具，请勿用于传输涉密文件！");
-        setSize(800, 800);
+        setTitle("文件传输工具（无网机器 → 有网机器）");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setLocationRelativeTo(null);
+        Dimension usableScreen = usableScreenSize();
+        setMinimumSize(new Dimension(Math.min(720, usableScreen.width), Math.min(660, usableScreen.height)));
+        getContentPane().setBackground(BACKGROUND);
+        setFont(new Font("Microsoft YaHei UI", Font.PLAIN, 14));
+        applyUiDefaults();
 
-        // 初始化组件
-        uploadFileButton = new JButton("「文件==》二维码图片  上传7M以内文件」");
-        selectFolderButton = new JButton("「二维码图片==》文件]  选择二维码文件夹」");
-        uploadVideoButton = new JButton("「二维码视频==》文件]  上传视频文件」");
-        fileChooser = new JFileChooser();
+        statusTextPane.setEditable(false);
+        statusTextPane.setFont(new Font("Microsoft YaHei UI", Font.PLAIN, 13));
+        statusTextPane.setForeground(new Color(0x344054));
+        statusTextPane.setBackground(new Color(0xFBFCFE));
+        statusTextPane.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
+        JScrollPane statusScroll = new JScrollPane(statusTextPane);
+        statusScroll.setBorder(BorderFactory.createLineBorder(BORDER));
+        statusScroll.setPreferredSize(new Dimension(720, 76));
 
-        // 创建描述文本区域
-        descriptionTextArea = new JTextArea();
-        descriptionTextArea.setEditable(false);
-        descriptionTextArea.setLineWrap(true);
-        descriptionTextArea.setWrapStyleWord(true);
-        descriptionTextArea.setText(
-                "说明文档:\n" +
-                        " \r\n" +
-                        "0.准备条件 无网机器和有网机器需要安装该软件(JDK8)，以及可以拍照录视频的手机。  \r\n" +
-                        "1.[无网机器] 点击按钮【「文件==》二维码图片  上传7M以内文件」】，选择需要传输文件。  \r\n" +
-                        "2.[无网机器] 会在上传文件对应文件夹路径生成 temp_qr_codes 目录，里面存放的就是二维码图片。 \r\n" +
-                        " \r\n" +
-                        " 【方式1】手机拍照二维码方式  [一张一张拍照，图片需要清晰] \r\n" +
-                        "3.1.[有网机器] 通过手机拍照+传输工具将二维码图片存在本电脑一个文件夹里面。  \r\n" +
-                        "3.2.[有网机器] 点击按钮【「二维码图片==》文件]  选择二维码文件夹」】 \r\n" +
-                        "3.2.[有网机器] 会在选择的文件夹路径生成解析后的文件。 \r\n" +
-                        " \r\n" +
-                        " 【方式2】手机拍二维码视频方式  [建议视频清晰情况下图片翻页速度可以快，例如一秒2张，一秒3张]\r\n" +
-                        "4.1.[有网机器] 通过手机录像+传输工具将视频存在本电脑一个文件夹里面。 推荐网页版微信文件传输助手传输视频！ \r\n" +
-                        "4.2.[有网机器] 点击按钮【「二维码视频==》文件]  上传视频文件」】，选择录有二维码的视频，\r\n" +
-                        "4.2.[有网机器] 会在上传视频文件对应文件夹路径生成 videoToPic 目录。  \r\n"+
-                        "4.3.[有网机器] 成功识别的二维码页保存在 videoToPic/recognized_qr，缺页清单保存在 videoToPic/missing_pages.txt。\r\n"+
-                        "4.4.[有网机器] 将补拍的缺页照片放入 recognized_qr，再用「二维码图片==》文件」选择 recognized_qr 文件夹解析。\r\n"+
-                        "注意：视频本身不能提供原文件总页数，清单能列出0至最大已识别页之间的缺页，不能推断末尾漏掉多少页。\r\n"+
-                        "4.5.[有网机器] 页码补齐后，会在 videoToPic 路径生成解析后的文件。 \r\n"
-        );
-        JScrollPane scrollPane = new JScrollPane(descriptionTextArea);
-
-
-        // 创建状态文本面板
-        statusTextPane = new JTextPane();
-        statusTextPane.setEditable(false); // 设置为不可编辑
-
-        // 进度条
-        progressBar = new JProgressBar(0, 100);
         progressBar.setStringPainted(true);
         progressBar.setString("就绪");
 
+        JPanel root = new JPanel(new BorderLayout(0, 14));
+        root.setOpaque(false);
+        root.setBorder(BorderFactory.createEmptyBorder(22, 26, 20, 26));
+        root.add(createHeader(), BorderLayout.NORTH);
+        JPanel content = new JPanel(new GridBagLayout());
+        content.setOpaque(false);
+        GridBagConstraints contentRow = new GridBagConstraints();
+        contentRow.gridx = 0;
+        contentRow.weightx = 1;
+        contentRow.fill = GridBagConstraints.HORIZONTAL;
+        contentRow.anchor = GridBagConstraints.NORTHWEST;
+        contentRow.insets = new java.awt.Insets(0, 0, 14, 0);
+        contentRow.weighty = 0;
+        content.add(createWorkArea(), contentRow);
+        contentRow.gridy = 1;
+        contentRow.weighty = 1;
+        contentRow.fill = GridBagConstraints.BOTH;
+        contentRow.insets = new java.awt.Insets(0, 0, 0, 0);
+        content.add(createActivityPanel(statusScroll), contentRow);
+        root.add(content, BorderLayout.CENTER);
+        setContentPane(root);
+        setSize(Math.min(1040, usableScreen.width), Math.min(790, usableScreen.height));
+        setLocationRelativeTo(null);
 
-        // 设置初始行数以控制高度
-        FontMetrics fontMetrics = statusTextPane.getFontMetrics(statusTextPane.getFont());
-        int lineHeight = fontMetrics.getHeight();
-        int preferredHeight = lineHeight * 15; // 15 lines of text
-        statusTextPane.setPreferredSize(new Dimension(getWidth(), preferredHeight));
-        JScrollPane statusScrollPane = new JScrollPane(statusTextPane);
-
-
-
-        // 设置布局
-        setLayout(new BorderLayout());
-
-        // 添加描述文本区域到北部
-        add(scrollPane, BorderLayout.NORTH);
-
-        // 创建按钮面板
-        JPanel buttonPanel = new JPanel();
-        buttonPanel.setLayout(new BoxLayout(buttonPanel, BoxLayout.Y_AXIS));
-        buttonPanel.add(createButtonRow(uploadFileButton));
-        buttonPanel.add(Box.createRigidArea(new Dimension(0, 2))); // 分隔符
-        buttonPanel.add(createButtonRow(selectFolderButton));
-        buttonPanel.add(Box.createRigidArea(new Dimension(0, 2))); // 分隔符
-        buttonPanel.add(createButtonRow(uploadVideoButton));
-
-        add(buttonPanel, BorderLayout.CENTER);
-
-        // 进度条 + 状态日志
-        JPanel bottomPanel = new JPanel(new BorderLayout());
-        bottomPanel.add(progressBar, BorderLayout.NORTH);
-        bottomPanel.add(statusScrollPane, BorderLayout.CENTER);
-        add(bottomPanel, BorderLayout.SOUTH);
-
-        // 添加事件监听器
-        // [XLS文件==》二维码]  上传XLS文件
-        uploadFileButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                new Thread(() -> {
-
-                    try{
-                        // 关闭按钮
-                        disableButtons();
-                        // 只能选择文件
-                        fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-                        int returnVal = fileChooser.showOpenDialog(FileTransferApp.this);
-                        if (returnVal == JFileChooser.APPROVE_OPTION) {
-                            selectedFile = fileChooser.getSelectedFile();
-                            appendStatus("状态: 已选择文件 " + selectedFile.getName());
-
-                            // 判断文件是否7m 以内
-                            long fileSizeInBytes = selectedFile.length();
-                            double fileSizeInMB = (double) fileSizeInBytes / (1024 * 1024);
-                            if (fileSizeInMB > 70) {
-                                appendStatus("已选择文件大小！ " + fileSizeInMB + " MB");
-                                throw new Exception("文件大小超过7M ，请重新选择！");
-                            }
-
-                            resetProgress("正在生成二维码");
-                            appendStatus("开始将文件转成 二维码文件！ " + selectedFile.getName() + " ，文件大小="+ fileSizeInMB + " MB");
-                            String res = FileConvertUtil.fileToQrCode(selectedFile.getAbsolutePath());
-                            appendStatus("完成将文件转成 二维码文件！ 生成路径：" + res);
-                            appendStatus("开始生成二维码视频！二维码图片路径：" + res);
-                            FFmpegUtil.geneteVideoFromImageDir(res);
-                            appendStatus("完成生成二维码视频！二维码视频路径：" + res);
-                            JOptionPane.showMessageDialog(FileTransferApp.this, "完成将文件转成 二维码文件！生成路径："+ res, "处理成功", JOptionPane.INFORMATION_MESSAGE);
-
-                        } else {
-                            appendStatus("状态: 未选择文件");
-                            JOptionPane.showMessageDialog(FileTransferApp.this, "未选择文件 " , "错误", JOptionPane.ERROR_MESSAGE);
-                        }
-                    }catch (Exception ex){
-                        ex.printStackTrace();
-                        appendStatus("异常 [文件==》二维码]！ " + ex.toString());
-                        JOptionPane.showMessageDialog(FileTransferApp.this, "异常 [文件==》二维码]！ "  + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
-                    }finally {
-                        // 开启按钮
-                        enableButtons();
-                    }
-                }).start();
-
-            }
-        });
-
-
-
-
-        // [二维码图片==》XLS文件]  选择二维码文件夹
-        selectFolderButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                new Thread(() -> {
-
-                    try{
-                        // 关闭按钮
-                        disableButtons();
-                        // 只能选择文件夹
-                        fileChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-                        int returnVal = fileChooser.showOpenDialog(FileTransferApp.this);
-                        if (returnVal == JFileChooser.APPROVE_OPTION) {
-                            selectedFolder = fileChooser.getSelectedFile();
-                            appendStatus("状态: 已选择文件夹 " + selectedFolder.getAbsolutePath());
-
-                            resetProgress("正在识别二维码图片");
-                            appendStatus("开始 [二维码图片==》文件]！ " + selectedFolder.getName());
-                            String res = FileConvertUtil.qrCode4ToFile(selectedFolder.getAbsolutePath());
-                            appendStatus("完成 [二维码图片==》文件]！ 生成路径："+ res);
-                            JOptionPane.showMessageDialog(FileTransferApp.this, "完成 [二维码图片==》文件]！生成路径："+ res, "处理成功", JOptionPane.INFORMATION_MESSAGE);
-                        } else {
-                            appendStatus("状态: 未选择文件夹");
-                            JOptionPane.showMessageDialog(FileTransferApp.this, "未选择文件夹 " , "错误", JOptionPane.ERROR_MESSAGE);
-                        }
-                    }catch (Exception ex){
-                        ex.printStackTrace();
-                        appendStatus("异常  [二维码图片==》文件]！ " + ex.toString());
-                        JOptionPane.showMessageDialog(FileTransferApp.this, "异常  [二维码图片==》文件]！ "  + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
-                    }finally {
-                        // 开启按钮
-                        enableButtons();
-                    }
-                }).start();
-            }
-        });
-
-        // 上传视频文件
-        // [二维码视频==》XLS文件]  上传视频文件
-        uploadVideoButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                new Thread(() -> {
-
-                    try{
-                        // 关闭按钮
-                        disableButtons();
-                        // 只能选择文件
-                        fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-                        int returnVal = fileChooser.showOpenDialog(FileTransferApp.this);
-                        if (returnVal == JFileChooser.APPROVE_OPTION) {
-                            selectedVideoFile = fileChooser.getSelectedFile();
-                            appendStatus("状态: 已选择视频文件 " + selectedVideoFile.getName());
-                            // 文件格式判断
-                            if (!isVideoFile(selectedVideoFile)) {
-                                throw new Exception("不支持该视频文件格式");
-                            }
-                            String videoPath = selectedVideoFile.getAbsolutePath();
-                            // 视频当前文件夹
-                            String videoParent = selectedVideoFile.getParent();
-
-                            String outputDirPath = videoParent + "/videoToPic/";
-                            // 新流程：ffmpeg 直接把裸帧输出到内存边解码边识别，不再落盘几千张 PNG
-                            appendStatus("开始 [二维码视频==》文件] 流式识别（不落盘中间帧，识别页将另存为二维码图片）！ " + selectedVideoFile.getName());
-                            appendStatus("视频输出目录：" + new File(outputDirPath).getAbsolutePath());
-                            resetProgress("准备中");
-                            final String[] resultHolder = new String[1];
-                            final int[] lastLoggedProgressBucket = {-1};
-                            try {
-                                resultHolder[0] = VideoQrDecoder.videoToFile(videoPath, outputDirPath,
-                                        VideoQrDecoder.DEFAULT_FPS, (message, percent) -> {
-                                            updateProgress(percent, message);
-                                            int bucket = percent / 10;
-                                            boolean importantEvent = message.contains("缺")
-                                                    || message.contains("保存")
-                                                    || message.contains("清单")
-                                                    || message.contains("补拍")
-                                                    || message.contains("分辨率")
-                                                    || message.contains("视频信息")
-                                                    || message.contains("未发现");
-                                            if (importantEvent || bucket > lastLoggedProgressBucket[0]) {
-                                                lastLoggedProgressBucket[0] = Math.max(bucket, lastLoggedProgressBucket[0]);
-                                                appendStatus("[视频解析 " + percent + "%] " + message);
-                                            }
-                                        });
-                                appendStatus("完成 [二维码视频==》文件]！ 生成路径：" + resultHolder[0]);
-                                appendStatus("已识别二维码页保存在：" + outputDirPath + "/recognized_qr；缺页清单：" + outputDirPath + "/missing_pages.txt");
-                                updateProgress(100, "完成");
-                            } catch (FileConvertUtil.DataIncompleteException incomplete) {
-                                // 数据不完整是识别结果的问题（缺页等），不能退回老流程，直接告知用户
-                                throw incomplete;
-                            } catch (Exception streamError) {
-                                // 流程性故障才退回老的“先抽帧再识别”方式
-                                appendStatus("流式识别失败：" + streamError.getMessage() + "，将退回 [抽帧==》识别] 方式重试");
-                                resultHolder[0] = fallbackVideoToFile(videoPath, outputDirPath, selectedVideoFile);
-                            }
-                            String res = resultHolder[0];
-                            JOptionPane.showMessageDialog(FileTransferApp.this, "完成 [二维码视频==》文件]！生成路径："+ res, "处理成功", JOptionPane.INFORMATION_MESSAGE);
-                        } else {
-                            appendStatus("状态: 未选择文件");
-                            JOptionPane.showMessageDialog(FileTransferApp.this, "未选择文件 " , "错误", JOptionPane.ERROR_MESSAGE);
-                        }
-                    }catch (Exception ex){
-                        ex.printStackTrace();
-                        if (ex instanceof FileConvertUtil.DataIncompleteException) {
-                            // 缺页等数据不完整问题：不生成文件，明确告知用户缺了哪些页
-                            appendStatus("数据不完整 [二维码视频==》文件]！ " + ex.getMessage());
-                            updateProgress(0, "数据不完整，未生成文件");
-                            JOptionPane.showMessageDialog(FileTransferApp.this, ex.getMessage(), "数据不完整", JOptionPane.WARNING_MESSAGE);
-                        } else {
-                            appendStatus("异常 [二维码视频==》文件]！ " + ex.toString());
-                            updateProgress(0, "处理失败");
-                            JOptionPane.showMessageDialog(FileTransferApp.this, "异常 [二维码视频==》文件]！ "  + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
-                        }
-                    }finally {
-                        // 开启按钮
-                        enableButtons();
-                    }
-                }).start();
-            }
-        });
+        uploadFileButton.addActionListener(e -> selectFileForEncoding());
+        selectFolderButton.addActionListener(e -> selectFolderForDecoding());
+        uploadVideoButton.addActionListener(e -> selectVideoForDecoding());
+        playGeneratedImagesButton.addActionListener(e -> playGeneratedFrames());
+        openGeneratedFolderButton.addActionListener(e -> openDirectoryFromField(generatedFramesPathField));
+        openReceivedFolderButton.addActionListener(e -> openDirectoryFromField(receivedFilePathField));
+        generatedFramesPathField.setEditable(false);
+        receivedFilePathField.setEditable(false);
+        generatedFramesPathField.setBackground(Color.WHITE);
+        receivedFilePathField.setBackground(Color.WHITE);
+        stylePathField(generatedFramesPathField);
+        stylePathField(receivedFilePathField);
     }
 
+    private JPanel createHeader() {
+        JPanel headerBar = new JPanel(new BorderLayout(12, 0));
+        headerBar.setOpaque(false);
+        JLabel title = new JLabel("文件传输工作台");
+        title.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 22));
+        title.setForeground(TEXT);
+        headerBar.add(title, BorderLayout.WEST);
+        JLabel badge = new JLabel("旧协议兼容  ·  四码模式");
+        badge.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 12));
+        badge.setForeground(ACCENT);
+        badge.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(0xC8DDF0), 1, true),
+                BorderFactory.createEmptyBorder(5, 9, 5, 9)));
+        badge.setOpaque(true);
+        badge.setBackground(new Color(0xEDF6FD));
+        headerBar.add(badge, BorderLayout.CENTER);
+        JPanel utilities = new JPanel(new GridLayout(1, 3, 8, 0));
+        utilities.setOpaque(false);
+        JButton helpButton = new JButton("使用说明");
+        JButton settingsButton = new JButton("目录设置");
+        JButton playbackButton = new JButton("播放速度");
+        styleButton(helpButton, false);
+        styleButton(settingsButton, false);
+        styleButton(playbackButton, false);
+        helpButton.addActionListener(e -> showUsage());
+        settingsButton.addActionListener(e -> showDirectorySettings());
+        playbackButton.addActionListener(e -> showPlaybackSettings());
+        utilities.add(helpButton);
+        utilities.add(settingsButton);
+        utilities.add(playbackButton);
+        headerBar.add(utilities, BorderLayout.EAST);
+        stretchHorizontally(headerBar);
+        return headerBar;
+    }
 
+    private JPanel createWorkArea() {
+        JPanel area = new JPanel();
+        area.setOpaque(false);
+        area.setLayout(new GridBagLayout());
+        GridBagConstraints row = new GridBagConstraints();
+        row.gridx = 0;
+        row.weightx = 1;
+        row.fill = GridBagConstraints.HORIZONTAL;
+        row.anchor = GridBagConstraints.NORTHWEST;
+        row.insets = new java.awt.Insets(0, 0, 12, 0);
+        JPanel send = cardPanel();
+        send.setLayout(new BorderLayout(14, 12));
+        JPanel sendHeading = new JPanel(new BorderLayout(12, 0));
+        sendHeading.setOpaque(false);
+        sendHeading.add(sectionHeading("发送文件", "生成新版四码二维码图片，可直接播放或用相机拍摄"), BorderLayout.CENTER);
+        styleButton(uploadFileButton, true);
+        uploadFileButton.setPreferredSize(new Dimension(244, 44));
+        JPanel sendAction = new JPanel(new GridBagLayout());
+        sendAction.setOpaque(false);
+        sendAction.add(uploadFileButton);
+        sendHeading.add(sendAction, BorderLayout.EAST);
+        JPanel sendBody = new JPanel(new BorderLayout(0, 12));
+        sendBody.setOpaque(false);
+        sendBody.add(sendHeading, BorderLayout.NORTH);
+        sendBody.add(createGeneratedFramesPanel(), BorderLayout.CENTER);
+        send.add(sendBody, BorderLayout.CENTER);
+        area.add(send, row);
 
+        JPanel receive = cardPanel();
+        receive.setLayout(new BorderLayout(0, 12));
+        receive.add(sectionHeading("接收文件", "支持旧版单码与新版四码图片、视频恢复"), BorderLayout.NORTH);
+        JPanel receiveContent = new JPanel(new GridLayout(1, 2, 10, 0));
+        receiveContent.setOpaque(false);
+        styleButton(selectFolderButton, false);
+        styleButton(uploadVideoButton, false);
+        selectFolderButton.setPreferredSize(new Dimension(220, 42));
+        uploadVideoButton.setPreferredSize(new Dimension(220, 42));
+        receiveContent.add(selectFolderButton);
+        receiveContent.add(uploadVideoButton);
+        receive.add(receiveContent, BorderLayout.CENTER);
+        JPanel receivedPathRow = new JPanel(new BorderLayout(8, 0));
+        receivedPathRow.setOpaque(false);
+        JLabel receivedLabel = new JLabel("解析文件位置");
+        receivedLabel.setPreferredSize(new Dimension(112, 32));
+        receivedFilePathField.setToolTipText("最近一次成功恢复的文件路径");
+        styleButton(openReceivedFolderButton, false);
+        receivedPathRow.add(receivedLabel, BorderLayout.WEST);
+        receivedPathRow.add(receivedFilePathField, BorderLayout.CENTER);
+        openReceivedFolderButton.setPreferredSize(new Dimension(116, 38));
+        receivedPathRow.add(openReceivedFolderButton, BorderLayout.EAST);
+        receive.add(receivedPathRow, BorderLayout.SOUTH);
+        row.gridy = 1;
+        row.insets = new java.awt.Insets(0, 0, 0, 0);
+        area.add(receive, row);
+        stretchHorizontally(area);
 
+        return area;
+    }
 
-    private JPanel createButtonRow(JButton button) {
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        panel.add(button);
+    private JPanel createGeneratedFramesPanel() {
+        JPanel panel = new JPanel(new BorderLayout(8, 5));
+        panel.setOpaque(false);
+        JLabel label = new JLabel("生成图片位置");
+        label.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 12));
+        label.setForeground(MUTED);
+        panel.add(label, BorderLayout.NORTH);
+        generatedFramesPathField.setToolTipText("四码图片输出目录");
+        JPanel pathRow = new JPanel(new BorderLayout(8, 0));
+        pathRow.setOpaque(false);
+        pathRow.add(generatedFramesPathField, BorderLayout.CENTER);
+        JPanel actions = new JPanel(new GridLayout(1, 2, 6, 0));
+        actions.setOpaque(false);
+        styleButton(openGeneratedFolderButton, false);
+        styleButton(playGeneratedImagesButton, true);
+        actions.setPreferredSize(new Dimension(224, 38));
+        actions.add(openGeneratedFolderButton);
+        actions.add(playGeneratedImagesButton);
+        pathRow.add(actions, BorderLayout.EAST);
+        panel.add(pathRow, BorderLayout.CENTER);
+        panel.setPreferredSize(new Dimension(720, 48));
         return panel;
     }
 
-    /**
-     * 更新进度条（线程安全）
-     * @param percent 0-100
-     * @param message 进度说明
-     */
+    private JPanel createSection(String title, String description, JButton action) {
+        JPanel panel = cardPanel();
+        panel.setLayout(new BorderLayout(14, 0));
+        panel.add(sectionHeading(title, description), BorderLayout.CENTER);
+        styleButton(action, true);
+        action.setPreferredSize(new Dimension(190, 44));
+        JPanel actionSlot = new JPanel(new java.awt.GridBagLayout());
+        actionSlot.setOpaque(false);
+        actionSlot.add(action);
+        panel.add(actionSlot, BorderLayout.EAST);
+        panel.setAlignmentX(LEFT_ALIGNMENT);
+        stretchHorizontally(panel);
+        return panel;
+    }
+
+    private static void stretchHorizontally(JPanel panel) {
+        Dimension preferred = panel.getPreferredSize();
+        panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, preferred.height));
+    }
+
+    private JPanel sectionHeading(String title, String description) {
+        JPanel text = new JPanel();
+        text.setOpaque(false);
+        text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
+        JLabel heading = new JLabel(title);
+        heading.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 16));
+        heading.setForeground(TEXT);
+        JTextArea detail = wrappedTextArea(description, 2, 12);
+        heading.setAlignmentX(LEFT_ALIGNMENT);
+        detail.setAlignmentX(LEFT_ALIGNMENT);
+        detail.setMaximumSize(new Dimension(Integer.MAX_VALUE, detail.getPreferredSize().height));
+        text.add(heading);
+        text.add(Box.createRigidArea(new Dimension(0, 5)));
+        text.add(detail);
+        return text;
+    }
+
+    private JPanel createActivityPanel(JScrollPane statusScroll) {
+        JPanel activity = cardPanel();
+        activity.setLayout(new BorderLayout(0, 9));
+        JPanel heading = new JPanel();
+        heading.setOpaque(false);
+        heading.setLayout(new BoxLayout(heading, BoxLayout.Y_AXIS));
+        JLabel label = new JLabel("运行状态");
+        label.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 14));
+        label.setForeground(TEXT);
+        taskLabel.setForeground(MUTED);
+        taskLabel.setMaximumSize(new Dimension(Integer.MAX_VALUE, taskLabel.getPreferredSize().height));
+        label.setAlignmentX(LEFT_ALIGNMENT);
+        taskLabel.setAlignmentX(LEFT_ALIGNMENT);
+        heading.add(label);
+        heading.add(Box.createRigidArea(new Dimension(0, 4)));
+        heading.add(taskLabel);
+        progressBar.setPreferredSize(new Dimension(100, 20));
+        activity.setPreferredSize(new Dimension(720, 156));
+        activity.add(heading, BorderLayout.NORTH);
+        JPanel content = new JPanel(new BorderLayout(0, 8));
+        content.setOpaque(false);
+        content.add(progressBar, BorderLayout.NORTH);
+        content.add(statusScroll, BorderLayout.CENTER);
+        activity.add(content, BorderLayout.CENTER);
+        stretchHorizontally(activity);
+        return activity;
+    }
+
+    private JPanel cardPanel() {
+        JPanel panel = new JPanel();
+        panel.setBackground(SURFACE);
+        panel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(BORDER, 1, true),
+                BorderFactory.createEmptyBorder(14, 16, 14, 16)));
+        return panel;
+    }
+
+    private static JTextArea wrappedTextArea(String text, int rows, int size) {
+        JTextArea area = new JTextArea(text, rows, 32);
+        area.setEditable(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setFocusable(false);
+        area.setOpaque(false);
+        area.setBorder(BorderFactory.createEmptyBorder());
+        area.setFont(new Font("Microsoft YaHei UI", Font.PLAIN, size));
+        area.setForeground(MUTED);
+        return area;
+    }
+
+    private void styleButton(JButton button, boolean primary) {
+        button.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 13));
+        button.setFocusPainted(false);
+        button.setOpaque(true);
+        button.setBackground(primary ? ACCENT : new Color(0xF7F9FC));
+        button.setForeground(primary ? Color.WHITE : new Color(0x344054));
+        button.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(primary ? ACCENT : BORDER, 1, true),
+                BorderFactory.createEmptyBorder(7, 10, 7, 10)));
+        button.setMinimumSize(new Dimension(88, 36));
+        button.setPreferredSize(new Dimension(Math.max(96, button.getPreferredSize().width), 38));
+        button.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+    }
+
+    private static void stylePathField(JTextField field) {
+        field.setFont(new Font("Microsoft YaHei UI", Font.PLAIN, 13));
+        field.setForeground(new Color(0x344054));
+        field.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(BORDER, 1, true),
+                BorderFactory.createEmptyBorder(0, 9, 0, 9)));
+        field.setPreferredSize(new Dimension(260, 38));
+    }
+
+    private void applyUiDefaults() {
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (Exception ignored) {
+            // Keep the platform default look and feel when the native one is unavailable.
+        }
+    }
+
+    private void selectFileForEncoding() {
+        clearGeneratedResult();
+        setChooserDirectoryFromSettings();
+        fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File file = fileChooser.getSelectedFile();
+        if (!file.isFile()) {
+            showError("所选路径不是文件。", "选择失败");
+            return;
+        }
+        if (file.length() > FileConvertUtil.MAX_LEGACY_FILE_BYTES) {
+            showError("当前二维码页格式最多支持 7 MiB。当前文件为 "
+                    + String.format(java.util.Locale.ROOT, "%.2f", file.length() / (1024.0 * 1024.0)) + " MiB。", "文件过大");
+            return;
+        }
+
+        Path output = TransferOutputPaths.besideFile(file.toPath(),
+                new SimpleDateFormat("yyyyMMdd_HHmmss_SSS").format(new Date()));
+        runTask("正在直接生成四码图片：" + file.getName(), () -> {
+            FourQrFrameComposer.composeFile(file.toPath(), output, (done, total) -> {
+                int percent = total == 0 ? 100 : (int) (done * 100L / total);
+                updateProgress(percent, "正在生成四码图片帧 " + done + "/" + total);
+            });
+            return output.toString();
+        }, result -> {
+            updateProgress(100, "完成");
+            setGeneratedResult(new File(result).toPath());
+            appendStatus("四码图片目录：" + result);
+            showArtifactDialog("四码图片生成完成", "已直接生成新协议四码图片（每帧最多 4 个二维码）。\n\n图片目录：" + result,
+                    new ArtifactLocation("打开图片目录", new File(result).toPath()),
+                    new ArtifactLocation("立即播放", () -> playFrames(new File(result).toPath())));
+        });
+    }
+
+    private void selectFolderForDecoding() {
+        clearReceivedResult();
+        setChooserDirectoryFromSettings();
+        fileChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File folder = fileChooser.getSelectedFile();
+        Path output = TransferOutputPaths.besideDirectory(folder.toPath(),
+                new SimpleDateFormat("yyyyMMdd_HHmmss_SSS").format(new Date()));
+        runTask("正在识别二维码图片：" + folder.getName(),
+                () -> FileConvertUtil.qrCode4ToFile(folder.getAbsolutePath(), output.toString()),
+                result -> {
+                    setReceivedResult(new File(result).toPath());
+                    showArtifactDialog("文件恢复完成", "文件已恢复：\n" + result,
+                            new ArtifactLocation("打开恢复文件目录", new File(result).toPath()));
+                });
+    }
+
+    private void selectVideoForDecoding() {
+        clearReceivedResult();
+        setChooserDirectoryFromSettings();
+        fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File video = fileChooser.getSelectedFile();
+        String name = video.getName().toLowerCase(java.util.Locale.ROOT);
+        if (!(name.endsWith(".mp4") || name.endsWith(".avi") || name.endsWith(".mkv")
+                || name.endsWith(".mov") || name.endsWith(".flv") || name.endsWith(".wmv")
+                || name.endsWith(".m4v") || name.endsWith(".webm"))) {
+            showError("不支持该视频格式。", "选择失败");
+            return;
+        }
+        Path output = TransferOutputPaths.besideFile(video.toPath(),
+                new SimpleDateFormat("yyyyMMdd_HHmmss_SSS").format(new Date()));
+        runTask("正在识别二维码视频：" + video.getName(), () -> {
+            return VideoQrDecoder.videoToFile(video.getAbsolutePath(), output.toString(),
+                    VideoQrDecoder.DEFAULT_FPS, (message, percent) -> {
+                        updateProgress(percent, message);
+                        if (percent % 10 == 0 || message.contains("缺页") || message.contains("补拍")) {
+                            appendStatus("[视频 " + percent + "%] " + message);
+                        }
+                    });
+        }, result -> {
+            updateProgress(100, "完成");
+            setReceivedResult(new File(result).toPath());
+            showArtifactDialog("文件恢复完成", "文件已恢复：\n" + result
+                            + "\n\n已识别二维码和缺页清单保存在：\n" + output,
+                    new ArtifactLocation("打开结果目录", output),
+                    new ArtifactLocation("打开补拍二维码目录", output.resolve("recognized_qr")));
+        });
+    }
+
+    private void showUsage() {
+        JTextArea help = new JTextArea(
+                "文件传输工具使用说明\n\n"
+                + "一、发送文件\n选择文件后直接生成新协议四码二维码图片，不落盘中间单码图片，也不生成视频。每帧最多 4 个二维码；生成图片位置、打开文件夹和播放按钮显示在发送文件区域下方。当前单文件上限为 7 MiB。\n\n"
+                + "二、接收二维码图片\n选择包含二维码图片的文件夹。恢复文件会写入该图片文件夹旁边、以输入文件夹名称和时间命名的结果目录。新协议单码图片请连同 transfer_manifest.txt 一起保留；新版恢复文件按原文件名开头并追加生成时间。旧协议没有原文件名信息，会使用 recovered 开头。\n\n"
+                + "三、接收二维码视频\n选择手机拍摄的视频。识别二维码、缺页清单和恢复文件会写入视频文件旁边、以视频文件名和时间命名的结果目录。建议使用原始视频，不要通过聊天软件压缩。\n\n"
+                + "四、四码图片播放\n生成完成后，可点击发送文件区域中的“播放图片”或结果弹窗中的“立即播放”。默认停留时间为 0.2 秒，可在顶部“播放速度”设置中修改；播放窗口也可以临时减慢或加快。接收端必须使用支持多码帧和清单校验的新版本。\n\n"
+                + "五、完整性与补拍\n新协议清单包含原文件名、页数、文件大小和 SHA-256。缺页或校验失败时不会输出成功文件。视频识别产生的补拍二维码保存在本次视频结果目录的 recognized_qr 子目录。\n\n"
+                + "六、应用配置\n目录设置用于选择发送文件、接收二维码图片或接收视频时，选择窗口默认打开的目录；二维码图片、视频和恢复文件等过程产物位于相应输入旁边的结果目录。播放速度通过单独的“播放速度”设置调整。目录不存在时程序会自动创建。配置保存在当前 Windows 用户目录下的 .qrcode-forwin/settings.properties。\n\n"
+                + "传输前建议先用小文件测试拍摄距离、对焦和清晰度。"
+        );
+        help.setEditable(false);
+        help.setLineWrap(true);
+        help.setWrapStyleWord(true);
+        help.setFont(new Font("Microsoft YaHei UI", Font.PLAIN, 13));
+        help.setBackground(Color.WHITE);
+        help.setBorder(BorderFactory.createEmptyBorder(14, 16, 14, 16));
+        JScrollPane scroll = new JScrollPane(help);
+        Dimension usable = usableScreenSize();
+        scroll.setPreferredSize(new Dimension(Math.max(260, Math.min(610, usable.width - 48)),
+                Math.max(180, Math.min(440, usable.height - 120))));
+        JOptionPane.showMessageDialog(this, scroll, "使用说明", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void showDirectorySettings() {
+        JTextField qrField = new JTextField(settings.getQrOutputDirectory(), 28);
+        JPanel form = new JPanel(new BorderLayout(0, 8));
+        JLabel description = new JLabel("发送文件及接收图片、视频的选择窗口都从此文件夹开始");
+        description.setForeground(MUTED);
+        form.add(description, BorderLayout.NORTH);
+        form.add(directoryRow("发送文件选择目录", qrField), BorderLayout.CENTER);
+        int result = JOptionPane.showConfirmDialog(this, form, "发送文件目录设置",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (result != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            String qr = validateDirectory(qrField.getText());
+            settings.setQrOutputDirectory(qr);
+            settings.save();
+            appendStatus("发送文件选择目录已保存：" + qr);
+            JOptionPane.showMessageDialog(this, "发送文件选择目录已保存。", "设置完成", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) {
+            showError(ex.getMessage(), "目录设置失败");
+        }
+    }
+
+    private void showPlaybackSettings() {
+        JSpinner dwellSpinner = new JSpinner(new SpinnerNumberModel(
+                settings.getPlaybackDwellMillis(), 200, 10000, 50));
+        JPanel form = new JPanel(new BorderLayout(10, 0));
+        JLabel label = new JLabel("每张图片停留");
+        label.setPreferredSize(new Dimension(112, 32));
+        form.add(label, BorderLayout.WEST);
+        form.add(dwellSpinner, BorderLayout.CENTER);
+        JLabel unit = new JLabel("毫秒（200 毫秒 = 每秒 5 张）");
+        unit.setForeground(MUTED);
+        form.add(unit, BorderLayout.EAST);
+        int result = JOptionPane.showConfirmDialog(this, form, "播放速度设置",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (result != JOptionPane.OK_OPTION) {
+            return;
+        }
+        try {
+            settings.setPlaybackDwellMillis((Integer) dwellSpinner.getValue());
+            settings.save();
+            appendStatus("图片播放速度已保存：每张停留 " + settings.getPlaybackDwellMillis() + " 毫秒。");
+            JOptionPane.showMessageDialog(this, "播放速度已保存。", "设置完成", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception ex) {
+            showError(ex.getMessage(), "播放速度设置失败");
+        }
+    }
+
+    private JPanel directoryRow(String label, JTextField field) {
+        JPanel row = new JPanel(new BorderLayout(8, 0));
+        row.setOpaque(false);
+        JLabel title = new JLabel(label);
+        title.setPreferredSize(new Dimension(132, 32));
+        JButton browse = new JButton("浏览…");
+        styleButton(browse, false);
+        browse.setPreferredSize(new Dimension(94, 36));
+        browse.addActionListener(e -> {
+            JFileChooser chooser = new JFileChooser(field.getText());
+            chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+            chooser.setDialogTitle("选择" + label);
+            if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+                field.setText(chooser.getSelectedFile().getAbsolutePath());
+            }
+        });
+        row.add(title, BorderLayout.WEST);
+        row.add(field, BorderLayout.CENTER);
+        row.add(browse, BorderLayout.EAST);
+        return row;
+    }
+
+    private String validateDirectory(String value) throws IOException {
+        if (value == null || value.trim().isEmpty()) {
+            throw new IOException("目录不能为空。");
+        }
+        Path path = new File(value.trim()).toPath().toAbsolutePath().normalize();
+        java.nio.file.Files.createDirectories(path);
+        if (!java.nio.file.Files.isDirectory(path) || !java.nio.file.Files.isWritable(path)) {
+            throw new IOException("目录不可写：" + path);
+        }
+        return path.toString();
+    }
+
+    private void setChooserDirectoryFromSettings() {
+        fileChooser.setCurrentDirectory(new File(settings.getQrOutputDirectory()));
+    }
+
+    private static String baseNameWithoutExtension(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 ? fileName.substring(0, dot) : fileName;
+    }
+
+    private Path lastGeneratedFramesDirectory;
+    private Path lastReceivedFile;
+
+    private void clearGeneratedResult() {
+        lastGeneratedFramesDirectory = null;
+        generatedFramesPathField.setText("尚未生成四码图片");
+    }
+
+    private void setGeneratedResult(Path directory) {
+        lastGeneratedFramesDirectory = directory;
+        String path = directory.toAbsolutePath().toString();
+        generatedFramesPathField.setText(path);
+        generatedFramesPathField.setToolTipText(path);
+        generatedFramesPathField.setCaretPosition(0);
+    }
+
+    private void clearReceivedResult() {
+        lastReceivedFile = null;
+        receivedFilePathField.setText("尚未解析文件");
+    }
+
+    private void setReceivedResult(Path file) {
+        lastReceivedFile = file;
+        String path = file.toAbsolutePath().toString();
+        receivedFilePathField.setText(path);
+        receivedFilePathField.setToolTipText(path);
+        receivedFilePathField.setCaretPosition(0);
+    }
+
+    private void openDirectoryFromField(JTextField field) {
+        if (field == generatedFramesPathField && lastGeneratedFramesDirectory != null) {
+            openDirectory(lastGeneratedFramesDirectory);
+        } else if (field == receivedFilePathField && lastReceivedFile != null) {
+            openDirectory(lastReceivedFile);
+        } else {
+            showInfo("当前没有可打开的结果目录。", "尚无结果");
+        }
+    }
+
+    private void playGeneratedFrames() {
+        if (lastGeneratedFramesDirectory != null) {
+            playFrames(lastGeneratedFramesDirectory);
+        } else {
+            showInfo("请先选择文件并生成四码图片。", "尚未生成图片");
+        }
+    }
+
+    private void playFrames(Path directory) {
+        try {
+            QrImagePlayerFrame.open(directory, settings.getPlaybackDwellMillis());
+        } catch (IOException ex) {
+            showError(ex.getMessage(), "播放失败");
+        }
+    }
+
+    private <T> void runTask(String startMessage, Callable<T> task, Consumer<T> onSuccess) {
+        setBusy(true);
+        taskLabel.setText(startMessage);
+        progressBar.setIndeterminate(true);
+        progressBar.setString("处理中");
+        appendStatus(startMessage);
+        new SwingWorker<T, Void>() {
+            @Override
+            protected T doInBackground() throws Exception {
+                return task.call();
+            }
+
+            @Override
+            protected void done() {
+                progressBar.setIndeterminate(false);
+                setBusy(false);
+                try {
+                    onSuccess.accept(get());
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    showError("处理被中断。", "处理失败");
+                } catch (ExecutionException ex) {
+                    Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+                    String message = cause.getMessage() == null ? cause.toString() : cause.getMessage();
+                    appendStatus("处理失败：" + message);
+                    if (cause instanceof FileConvertUtil.DataIncompleteException) {
+                        showScrollableMessage("数据不完整", message, JOptionPane.WARNING_MESSAGE);
+                        updateProgress(0, "数据不完整，未生成文件");
+                    } else {
+                        showError(message, "处理失败");
+                    }
+                }
+            }
+        }.execute();
+    }
+
+    private void setBusy(boolean busy) {
+        uploadFileButton.setEnabled(!busy);
+        selectFolderButton.setEnabled(!busy);
+        uploadVideoButton.setEnabled(!busy);
+        if (!busy) {
+            progressBar.setIndeterminate(false);
+            taskLabel.setText("准备就绪");
+        } else {
+            taskLabel.setText("任务处理中");
+        }
+    }
+
     private void updateProgress(int percent, String message) {
         SwingUtilities.invokeLater(() -> {
             progressBar.setIndeterminate(false);
             progressBar.setValue(Math.max(0, Math.min(100, percent)));
-            progressBar.setString(percent + "%  " + message);
+            progressBar.setString(Math.max(0, Math.min(100, percent)) + "%");
+            taskLabel.setText(message);
         });
     }
 
-    /**
-     * 重置进度条
-     */
-    private void resetProgress(String message) {
-        SwingUtilities.invokeLater(() -> {
-            progressBar.setIndeterminate(false);
-            progressBar.setValue(0);
-            progressBar.setString(message);
-        });
-    }
-
-    /**
-     * 老流程兜底：先抽帧落盘，再识别
-     */
-    private String fallbackVideoToFile(String videoPath, String outputDirPath, File videoFile) throws Exception {
-        String videoExt = getFileExtension(videoFile.getName()).toLowerCase();
-        // iPhone等设备录制的 .mov 通常是 H.265/HEVC 编码，JCodec只支持H.264必然失败，
-        // 这类格式直接走FFmpeg，避免先白跑一遍JCodec浪费时间
-        boolean jcodecUnsupported = "mov".equals(videoExt) || "hevc".equals(videoExt) || "h265".equals(videoExt);
-        if (jcodecUnsupported) {
-            appendStatus("开始 [二维码视频=FFmpeg=》图片]！(" + videoExt + " 格式JCodec不支持，直接使用FFmpeg) " + videoFile.getName());
-            FFmpegUtil.videoToPic(videoPath, outputDirPath);
-            appendStatus("完成 [二维码视频=FFmpeg=》图片]！ " + videoFile.getName());
-        } else {
-            try {
-                appendStatus("开始 [二维码视频=JCodec=》图片] 将使用JCodec开源组件进行视频处理！ " + videoFile.getName());
-                JCodecUtill.videoToPic(videoPath, outputDirPath);
-                appendStatus("完成 [二维码视频=JCodec=》图片]！ " + videoFile.getName());
-            } catch (Exception exception) {
-                appendStatus("失败 [二维码视频=JCodec=》图片]！将使用ffmpeg开源组件进行视频处理！ " + videoFile.getName());
-                appendStatus("开始 [二维码视频=FFmpeg=》图片]！ " + videoFile.getName());
-                FFmpegUtil.videoToPic(videoPath, outputDirPath);
-                appendStatus("完成 [二维码视频=FFmpeg=》图片]！ " + videoFile.getName());
-            }
-        }
-        appendStatus("开始 [按帧截取图片==》文件]！ 输出目录：" + outputDirPath);
-        String res = FileConvertUtil.qrCode4ToFile(outputDirPath);
-        appendStatus("完成 [按帧截取图片==》文件]！ " + videoFile.getName());
-        updateProgress(100, "完成");
-        return res;
-    }
-
-    /**
-     * 窗口日志展示
-     * @param message
-     */
     private void appendStatus(String message) {
         SwingUtilities.invokeLater(() -> {
-            String currentText = statusTextPane.getText();
-            if (!currentText.isEmpty()) {
-                currentText += "\n";
+            String line = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ").format(new Date()) + message;
+            System.out.println(line);
+            Document document = statusTextPane.getDocument();
+            try {
+                document.insertString(document.getLength(), line + "\n", null);
+                int excess = document.getLength() - MAX_STATUS_CHARACTERS;
+                if (excess > 0) {
+                    document.remove(0, excess);
+                }
+                statusTextPane.setCaretPosition(document.getLength());
+            } catch (BadLocationException ignored) {
+                // A log line should never stop the file operation.
             }
-            String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ").format(new Date());
-            String timestampAndMessage = timestamp + message;
-            currentText += timestampAndMessage;
-            System.out.println(timestampAndMessage);
-            statusTextPane.setText(currentText);
-            statusTextPane.setCaretPosition(statusTextPane.getDocument().getLength());
         });
     }
 
+    private void showArtifactDialog(String title, String message, ArtifactLocation... locations) {
+        Dimension usable = usableScreenSize();
+        int width = Math.max(320, Math.min(700, usable.width - 20));
+        int height = Math.max(220, Math.min(470, usable.height - 20));
+        JPanel content = new JPanel(new BorderLayout(0, 10));
+        content.setBorder(BorderFactory.createEmptyBorder(8, 8, 6, 8));
+        JTextArea description = new JTextArea(message);
+        description.setEditable(false);
+        description.setLineWrap(true);
+        description.setWrapStyleWord(true);
+        description.setOpaque(false);
+        description.setFont(new Font("Microsoft YaHei UI", Font.PLAIN, 13));
+        description.setCaretPosition(0);
+        JScrollPane messageScroll = new JScrollPane(description);
+        messageScroll.setBorder(BorderFactory.createEmptyBorder());
+        messageScroll.setPreferredSize(new Dimension(Math.max(250, width - 54), Math.max(60, height - 190)));
+        content.add(messageScroll, BorderLayout.CENTER);
 
-
-
-    /**
-     *  按钮不能点击
-     */
-    private void disableButtons() {
-        uploadFileButton.setEnabled(false);
-        selectFolderButton.setEnabled(false);
-        uploadVideoButton.setEnabled(false);
+        JPanel actions = new JPanel(new GridLayout(locations.length + 1, 1, 0, 5));
+        for (ArtifactLocation location : locations) {
+            JButton open = new JButton(location.label);
+            open.addActionListener(e -> {
+                Window window = SwingUtilities.getWindowAncestor(content);
+                if (window != null) window.dispose();
+                if (location.action != null) location.action.run();
+                else openDirectory(location.path);
+            });
+            actions.add(open);
+        }
+        JButton close = new JButton("关闭");
+        close.addActionListener(e -> {
+            Window window = SwingUtilities.getWindowAncestor(content);
+            if (window != null) window.dispose();
+        });
+        actions.add(close);
+        content.add(actions, BorderLayout.SOUTH);
+        JOptionPane pane = new JOptionPane(content, JOptionPane.INFORMATION_MESSAGE, JOptionPane.DEFAULT_OPTION);
+        JDialog dialog = pane.createDialog(this, title);
+        dialog.setModal(true);
+        dialog.setResizable(true);
+        dialog.setSize(width, height);
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
     }
 
-    /**
-     *  按钮能点击
-     */
-    private void enableButtons() {
-        uploadFileButton.setEnabled(true);
-        selectFolderButton.setEnabled(true);
-        uploadVideoButton.setEnabled(true);
+    private void showScrollableMessage(String title, String message, int messageType) {
+        Dimension usable = usableScreenSize();
+        JTextArea text = new JTextArea(message);
+        text.setEditable(false);
+        text.setLineWrap(true);
+        text.setWrapStyleWord(true);
+        text.setCaretPosition(0);
+        JScrollPane scroll = new JScrollPane(text);
+        scroll.setPreferredSize(new Dimension(Math.max(250, Math.min(620, usable.width - 70)),
+                Math.max(140, Math.min(360, usable.height - 150))));
+        JOptionPane.showMessageDialog(this, scroll, title, messageType);
     }
 
-    /**
-     * 获取文件名后缀
-     * @param fileName
-     * @return
-     */
-    private String getFileExtension(String fileName) {
-        if (fileName.lastIndexOf(".") != -1 && fileName.lastIndexOf(".") != 0) {
-            return fileName.substring(fileName.lastIndexOf(".") + 1);
-        } else {
-            return "";
+    private static Dimension usableScreenSize() {
+        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+        return new Dimension(Math.max(320, screen.width - 40), Math.max(240, screen.height - 80));
+    }
+
+    private void openDirectory(Path path) {
+        try {
+            Path directory = java.nio.file.Files.isDirectory(path) ? path : path.getParent();
+            if (directory == null || !java.nio.file.Files.exists(directory)) {
+                throw new IOException("目录不存在：" + path);
+            }
+            if (!Desktop.isDesktopSupported()) {
+                throw new IOException("当前系统不支持自动打开文件夹。");
+            }
+            Desktop.getDesktop().open(directory.toFile());
+        } catch (IOException | UnsupportedOperationException ex) {
+            showError("无法打开目录：" + ex.getMessage(), "打开目录失败");
         }
     }
 
-    /**
-     * 判断是否是视频
-     * @param file
-     * @return
-     */
-    private boolean isVideoFile(File file) {
-        String extension = getFileExtension(file.getName()).toLowerCase();
-        return extension.equals("mp4") || extension.equals("avi") || extension.equals("mkv") || extension.equals("mov") || extension.equals("flv") || extension.equals("wmv");
+    private static final class ArtifactLocation {
+        final String label;
+        final Path path;
+        final Runnable action;
+
+        ArtifactLocation(String label, Path path) {
+            this.label = label;
+            this.path = path;
+            this.action = null;
+        }
+
+        ArtifactLocation(String label, Runnable action) {
+            this.label = label;
+            this.path = null;
+            this.action = action;
+        }
     }
+
+    private void showError(String message, String title) {
+        appendStatus(title + "：" + message);
+            showScrollableMessage(title, message, JOptionPane.ERROR_MESSAGE);
+    }
+
+    private void showInfo(String message, String title) {
+        JOptionPane.showMessageDialog(this, message, title, JOptionPane.INFORMATION_MESSAGE);
+    }
+
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             FileTransferApp app = new FileTransferApp();
@@ -426,5 +812,3 @@ public class FileTransferApp extends JFrame {
         });
     }
 }
-
-

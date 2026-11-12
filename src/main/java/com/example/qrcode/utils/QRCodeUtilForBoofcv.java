@@ -15,6 +15,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.awt.Rectangle;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -22,12 +25,28 @@ import java.util.List;
  */
 public class QRCodeUtilForBoofcv {
 
+    /** 单个二维码在整帧中的定位区域及 BoofCV 单码解码结果。 */
+    public static class QrRegion {
+        public final Rectangle bounds;
+        public final String text;
+
+        QrRegion(Rectangle bounds, String text) {
+            this.bounds = bounds;
+            this.text = text;
+        }
+    }
+
     /**
      * 字符串生成二维码文件 默认png格式
      * @param contents
      * @param filePath
      */
     public static void encode(String contents,String filePath) throws IOException {
+        BufferedImage image = encodeToImage(contents);
+        ImageIO.write(image, "png", Files.newOutputStream(Paths.get(filePath)));
+    }
+
+    public static BufferedImage encodeToImage(String contents) {
         QrCode qr = new QrCodeEncoder().
                 setError(QrCode.ErrorLevel.M).
                 addAutomatic(contents).fixate();
@@ -36,9 +55,7 @@ public class QRCodeUtilForBoofcv {
 
         render.render(qr);
 
-        // Convert it to a BufferedImage for display purposes
-        BufferedImage image = ConvertBufferedImage.convertTo(render.getGray(), null);
-        ImageIO.write(image, "png", Files.newOutputStream(Paths.get(filePath)));
+        return ConvertBufferedImage.convertTo(render.getGray(), null);
     }
 
 
@@ -103,6 +120,44 @@ public class QRCodeUtilForBoofcv {
             // The message encoded in the marker
             sb.append(qr.message);
         return new DetectResult(sb.toString(), detections.size());
+    }
+
+    /**
+     * 定位整帧里的二维码，并分别返回每个二维码的边界框。
+     * 边界来自 QR 码自身的定位图形；四码画面另加的角标用于提示布局，裁剪时仍以实测码框为准。
+     */
+    public static List<QrRegion> findQrRegions(BufferedImage image) {
+        if (image == null) {
+            return Collections.emptyList();
+        }
+        GrayU8 input = ConvertBufferedImage.convertFrom(image, (GrayU8) null);
+        QrCodeDetector<GrayU8> detector = DETECTOR_HOLDER.get();
+        detector.process(input);
+        List<QrCode> detections = detector.getDetections();
+        List<QrRegion> regions = new ArrayList<>(detections.size());
+        for (QrCode qr : detections) {
+            if (qr.bounds == null || qr.bounds.size() < 4) {
+                continue;
+            }
+            double minX = Double.POSITIVE_INFINITY;
+            double minY = Double.POSITIVE_INFINITY;
+            double maxX = Double.NEGATIVE_INFINITY;
+            double maxY = Double.NEGATIVE_INFINITY;
+            for (int i = 0; i < qr.bounds.size(); i++) {
+                minX = Math.min(minX, qr.bounds.get(i).x);
+                minY = Math.min(minY, qr.bounds.get(i).y);
+                maxX = Math.max(maxX, qr.bounds.get(i).x);
+                maxY = Math.max(maxY, qr.bounds.get(i).y);
+            }
+            int x1 = Math.max(0, (int) Math.floor(minX));
+            int y1 = Math.max(0, (int) Math.floor(minY));
+            int x2 = Math.min(image.getWidth(), (int) Math.ceil(maxX) + 1);
+            int y2 = Math.min(image.getHeight(), (int) Math.ceil(maxY) + 1);
+            if (x2 > x1 && y2 > y1) {
+                regions.add(new QrRegion(new Rectangle(x1, y1, x2 - x1, y2 - y1), qr.message));
+            }
+        }
+        return regions;
     }
 
     public static void main(String[] args) throws IOException {

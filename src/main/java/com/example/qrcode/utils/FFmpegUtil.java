@@ -41,7 +41,6 @@ public class FFmpegUtil {
     // 将4个图片合成一个 图片名称前缀
     private static final String CONCATENATEDIMAGE_NAME_PREFIX ="concatenated_";
     // 生成视频名称前缀
-    private static final String VIDEO_NAME_PREFIX ="video_";
     // 生成视频需要将图片路径写入txt文本里面
     private static final String CONCATENATED_FILE_LIST_TXT_NAME ="concatenated_file_list.txt";
 
@@ -720,23 +719,45 @@ public class FFmpegUtil {
     /**
      * 根据图片文件夹生成视频
      */
-    public static void geneteVideoFromImageDir(String concatenatedImageDirPath){
+    public static String geneteVideoFromImageDir(String concatenatedImageDirPath) throws IOException, InterruptedException {
+        return geneteVideoFromImageDir(concatenatedImageDirPath, 3);
+    }
+
+    /** Generate an MP4 with one source image per frame at the requested frame rate. */
+    public static String geneteVideoFromImageDir(String concatenatedImageDirPath, int framesPerSecond)
+            throws IOException, InterruptedException {
+        return geneteVideoFromImageDir(concatenatedImageDirPath, (double) framesPerSecond);
+    }
+
+    public static String geneteVideoFromImageDir(String concatenatedImageDirPath, double framesPerSecond)
+            throws IOException, InterruptedException {
+        return geneteVideoFromImageDir(concatenatedImageDirPath, framesPerSecond, "video");
+    }
+
+    public static String geneteVideoFromImageDir(String concatenatedImageDirPath, double framesPerSecond,
+                                                  String fileNamePrefix)
+            throws IOException, InterruptedException {
+        if (Double.isNaN(framesPerSecond) || Double.isInfinite(framesPerSecond)
+                || framesPerSecond < 0.1 || framesPerSecond > 30) {
+            throw new IllegalArgumentException("视频帧率需在 0.1 到 30 fps 之间。");
+        }
         System.out.println("根据图片文件夹生成视频文件路径" + concatenatedImageDirPath );
         try {
+            Path imageDirectory = Paths.get(concatenatedImageDirPath).toAbsolutePath();
+            Files.createDirectories(imageDirectory);
             if (tempFFmpeg == null) {
                 tempFFmpeg = initFFmpeg();
             }
             //  读取图片列表并生成txt
-            String outputFile = concatenatedImageDirPath + CONCATENATED_FILE_LIST_TXT_NAME;
+            String outputFile = imageDirectory.resolve(CONCATENATED_FILE_LIST_TXT_NAME).toString();
 
             // 获取文件夹中的所有 PNG 图片文件
             List<File> imageFiles = FilesUtil.getImageFiles(concatenatedImageDirPath);
             if (imageFiles.isEmpty()) {
-                System.out.println("No PNG files found in the specified directory.");
-                return;
+                throw new IOException("二维码目录中没有 PNG 图片：" + concatenatedImageDirPath);
             }
-            // 按文件名排序
-            Collections.sort(imageFiles);
+            // 数字自然序，避免 qr_code_10.png 排在 qr_code_2.png 前面。
+            imageFiles.sort(FFmpegUtil::compareNaturalFileNames);
             // 写入 concatenated_file_list.txt
             // 注意：开头把第一张图多重复两次（约1秒），给"录制开始偏晚"留出余量，
             // 否则第0页（文件头所在页）一旦没录到，整个文件都无法还原
@@ -754,16 +775,18 @@ public class FFmpegUtil {
                 }
                 System.out.println("生成 concatenated_file_list.txt  成功.");
             } catch (IOException e) {
-                e.printStackTrace();
+                throw new IOException("写入 FFmpeg 图片清单失败：" + outputFile, e);
             }
 
 
-            String timestamp = new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date());
-            String videoPath =concatenatedImageDirPath+ VIDEO_NAME_PREFIX +timestamp+ ".mp4";
+            String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS").format(new Date());
+            String safePrefix = sanitizeFileNamePrefix(fileNamePrefix);
+            String videoPath = imageDirectory.resolve(safePrefix + "_" + timestamp + ".mp4").toString();
             // 定义FFmpeg命令
             String[] command = {
-                    "\"" +  tempFFmpeg.getAbsolutePath() + "\"",
-                    "-r", "3", // 一秒 3帧
+                    tempFFmpeg.getAbsolutePath(),
+                    "-y",
+                    "-r", String.format(Locale.ROOT, "%.3f", framesPerSecond),
                     "-f", "concat",
                     "-safe", "0", //-f concat 和 -safe 0 选项来读取文件列表
                     "-i", outputFile,
@@ -774,18 +797,43 @@ public class FFmpegUtil {
             System.out.println("根据图片文件夹生成视频FFmpeg命令 =ffmpeg " + String.join(" ", command));
             ProcessBuilder processBuilder = new ProcessBuilder(command);
             Process process = processBuilder.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                System.out.println(line);  // 打印FFmpeg输出信息
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println(line);
+                }
             }
             int exitCode = process.waitFor();
             System.out.println("生成视频文件 FFmpeg exited with code: " + exitCode);
+            if (exitCode != 0 || !new File(videoPath).isFile() || new File(videoPath).length() == 0) {
+                throw new IOException("FFmpeg 生成视频失败（退出码 " + exitCode + "）：" + videoPath);
+            }
             System.out.println("根据图片文件夹生成视频文件完成 " + videoPath);
-
-        } catch (IOException | InterruptedException e) {
-            e.printStackTrace();
+            return videoPath;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
         }
+    }
+
+    private static String sanitizeFileNamePrefix(String value) {
+        if (value == null || value.trim().isEmpty()) return "video";
+        String safe = value.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+        return safe.isEmpty() || ".".equals(safe) || "..".equals(safe) ? "video" : safe;
+    }
+
+    private static int compareNaturalFileNames(File left, File right) {
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("^(.*?)(\\d+)(\\.[^.]+)$");
+        java.util.regex.Matcher a = pattern.matcher(left.getName());
+        java.util.regex.Matcher b = pattern.matcher(right.getName());
+        if (a.matches() && b.matches() && a.group(1).equalsIgnoreCase(b.group(1))
+                && a.group(3).equalsIgnoreCase(b.group(3))) {
+            int byNumber = Long.compare(Long.parseLong(a.group(2)), Long.parseLong(b.group(2)));
+            if (byNumber != 0) {
+                return byNumber;
+            }
+        }
+        return left.getName().compareToIgnoreCase(right.getName());
     }
 
 
@@ -796,7 +844,7 @@ public class FFmpegUtil {
      * @param qrcodeFilePath 生成二维码文件夹
      * @return  qrcodeFilePath 合成图片和视频文件夹路径
      */
-    public static  String  geneteConcatenatedImageAndVideo(String qrcodeFilePath ){
+    public static  String  geneteConcatenatedImageAndVideo(String qrcodeFilePath ) throws IOException, InterruptedException {
 
         System.out.println("开始解析图片二维码合成和生成视频  原图片路径 " + qrcodeFilePath);
         // 获取 Path 对象
@@ -910,7 +958,7 @@ public class FFmpegUtil {
         clernFFmpeg();
     }
 
-    public static void main4(String[] args) {
+    public static void main4(String[] args) throws IOException, InterruptedException {
         String qrcodeFilePath =  "C:\\soft\\二维码文件传输工具\\测试\\合并测试\\in\\";
         // 将生成二维码文件夹 里面的图片全成 一个图片4个二维码，然后生成1秒张的视频
         geneteConcatenatedImageAndVideo( qrcodeFilePath );

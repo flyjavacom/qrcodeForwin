@@ -6,6 +6,12 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.awt.Rectangle;
+import java.awt.Graphics2D;
+import java.awt.image.BufferedImage;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
@@ -14,6 +20,20 @@ public class QRCodeUtil {
     /** 一页二维码的有效内容长度下限 */
     private static final int MIN_VALID_LENGTH = 20;
 
+    public static BufferedImage encodeToImage(String contents) throws IOException {
+        try {
+            return QRCodeUtilForZxing.encodeToImage(contents);
+        } catch (Exception zxingError) {
+            System.err.println("ZXing 内存二维码生成失败，改用 BoofCV，原因：" + zxingError.getMessage());
+            try {
+                return QRCodeUtilForBoofcv.encodeToImage(contents);
+            } catch (Exception boofcvError) {
+                boofcvError.addSuppressed(zxingError);
+                throw new IOException("二维码图像生成失败", boofcvError);
+            }
+        }
+    }
+
     /**
      * 文本生成二维码文件
      * @param contents
@@ -21,17 +41,164 @@ public class QRCodeUtil {
      * @throws IOException
      */
     public static void encode(String contents,String filePath) throws IOException {
-        try {
-            // 先保证文件夹是否存在
-            if (!Files.exists(Paths.get(filePath))) {
-                Files.createDirectories(Paths.get(filePath));
-            }
-            QRCodeUtilForZxing.encode(contents,filePath);
-        }catch (Exception e){
-            e.printStackTrace();
-            System.err.println("zxing生成二维码异常，将使用Boofcv生成二维码" + filePath);
-            QRCodeUtilForBoofcv.encode(contents,filePath);
+        java.nio.file.Path output = Paths.get(filePath).toAbsolutePath();
+        java.nio.file.Path parent = output.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
         }
+        try {
+            QRCodeUtilForZxing.encode(contents,filePath);
+        } catch (Exception zxingError) {
+            System.err.println("ZXing 生成二维码失败，改用 BoofCV：" + filePath + "，原因：" + zxingError.getMessage());
+            try {
+                QRCodeUtilForBoofcv.encode(contents,filePath);
+            } catch (Exception boofcvError) {
+                boofcvError.addSuppressed(zxingError);
+                if (boofcvError instanceof IOException) {
+                    throw (IOException) boofcvError;
+                }
+                throw new IOException("二维码图片生成失败：" + filePath, boofcvError);
+            }
+        }
+    }
+
+    /**
+     * 解码一帧中的一个或多个二维码。
+     * 单码图仍使用旧解码逻辑；检测到多个二维码时先按检测区域裁剪，再逐张调用旧解码器。
+     */
+    public static List<String> decodeAll(BufferedImage image) {
+        if (image == null) {
+            return java.util.Collections.emptyList();
+        }
+        List<QRCodeUtilForBoofcv.QrRegion> regions = QRCodeUtilForBoofcv.findQrRegions(image);
+        if (regions.size() <= 1) {
+            String text = decode(image);
+            if ((text == null || text.isEmpty()) && !regions.isEmpty()) {
+                text = regions.get(0).text;
+            }
+            if (text == null || text.isEmpty()) {
+                return java.util.Collections.emptyList();
+            }
+            return java.util.Collections.singletonList(text);
+        }
+
+        List<String> results = new ArrayList<>(regions.size());
+        List<QRCodeUtilForBoofcv.QrRegion> ordered = new ArrayList<>(regions);
+        ordered.sort(Comparator.comparingInt((QRCodeUtilForBoofcv.QrRegion r) -> r.bounds.y)
+                .thenComparingInt(r -> r.bounds.x));
+        for (QRCodeUtilForBoofcv.QrRegion region : ordered) {
+            Rectangle bounds = expandAndClip(region.bounds, image.getWidth(), image.getHeight());
+            String decoded = null;
+            if (bounds.width > 0 && bounds.height > 0) {
+                BufferedImage crop = copyCrop(image, bounds);
+                decoded = decode(crop);
+            }
+            // BoofCV 已逐个定位并解出内容时，保留该结果作为单码解码器的兜底。
+            if ((decoded == null || decoded.isEmpty()) && region.text != null && !region.text.isEmpty()) {
+                decoded = region.text;
+            }
+            if (decoded != null && !decoded.isEmpty()) {
+                results.add(decoded);
+            }
+        }
+        return results;
+    }
+
+    /**
+     * 多码画面的强解补充：对已定位出的每个二维码区域分别运行完整解码链。
+     * 普通 decodeAll 即使读出同一画面的其它二维码，也可能有一个区域没解出；
+     * 因此补采时不能只在整张图完全没有结果时才重试。
+     */
+    public static List<String> decodeAllHeavy(BufferedImage image) {
+        if (image == null) {
+            return java.util.Collections.emptyList();
+        }
+        List<QRCodeUtilForBoofcv.QrRegion> regions = QRCodeUtilForBoofcv.findQrRegions(image);
+        if (regions.size() <= 1) {
+            Outcome outcome = decodeDetailed(image, true, true);
+            if (outcome.text != null && !outcome.text.isEmpty()) {
+                return java.util.Collections.singletonList(outcome.text);
+            }
+            if (!regions.isEmpty() && regions.get(0).text != null && !regions.get(0).text.isEmpty()) {
+                return java.util.Collections.singletonList(regions.get(0).text);
+            }
+            return java.util.Collections.emptyList();
+        }
+
+        List<QRCodeUtilForBoofcv.QrRegion> ordered = new ArrayList<>(regions);
+        ordered.sort(Comparator.comparingInt((QRCodeUtilForBoofcv.QrRegion r) -> r.bounds.y)
+                .thenComparingInt(r -> r.bounds.x));
+        List<String> results = new ArrayList<>(ordered.size());
+        for (QRCodeUtilForBoofcv.QrRegion region : ordered) {
+            Rectangle bounds = expandAndClip(region.bounds, image.getWidth(), image.getHeight());
+            String decoded = null;
+            if (bounds.width > 0 && bounds.height > 0) {
+                decoded = decodeDetailed(copyCrop(image, bounds), true, true).text;
+            }
+            if ((decoded == null || decoded.isEmpty()) && region.text != null && !region.text.isEmpty()) {
+                decoded = region.text;
+            }
+            if (decoded != null && !decoded.isEmpty() && !results.contains(decoded)) {
+                results.add(decoded);
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Four-code playback fallback: split a 16:9 video frame into overlapping quadrants,
+     * then run the legacy single-QR decoder on each crop. The overlap protects codes that
+     * sit near the split lines and duplicate results are removed by their full payload.
+     */
+    public static List<String> decodeFourQuadrants(BufferedImage image) {
+        if (image == null) return java.util.Collections.emptyList();
+        int midX = image.getWidth() / 2;
+        int midY = image.getHeight() / 2;
+        int marginX = Math.max(8, image.getWidth() / 24);
+        int marginY = Math.max(8, image.getHeight() / 24);
+        int[] xs = {0, Math.max(0, midX - marginX), 0, Math.max(0, midX - marginX)};
+        int[] ys = {0, 0, Math.max(0, midY - marginY), Math.max(0, midY - marginY)};
+        int[] x2s = {Math.min(image.getWidth(), midX + marginX), image.getWidth(),
+                Math.min(image.getWidth(), midX + marginX), image.getWidth()};
+        int[] y2s = {Math.min(image.getHeight(), midY + marginY), Math.min(image.getHeight(), midY + marginY),
+                image.getHeight(), image.getHeight()};
+        List<String> results = new ArrayList<>(4);
+        for (int i = 0; i < 4; i++) {
+            Rectangle bounds = new Rectangle(xs[i], ys[i], x2s[i] - xs[i], y2s[i] - ys[i]);
+            String text = decode(copyCrop(image, bounds));
+            if (text != null && !text.isEmpty() && !results.contains(text)) {
+                results.add(text);
+            }
+        }
+        return results;
+    }
+
+    private static BufferedImage copyCrop(BufferedImage source, Rectangle bounds) {
+        int type = source.getType() == BufferedImage.TYPE_BYTE_GRAY
+                ? BufferedImage.TYPE_BYTE_GRAY : BufferedImage.TYPE_3BYTE_BGR;
+        BufferedImage copy = new BufferedImage(bounds.width, bounds.height, type);
+        Graphics2D graphics = copy.createGraphics();
+        try {
+            graphics.drawImage(source, 0, 0, bounds.width, bounds.height,
+                    bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height, null);
+        } finally {
+            graphics.dispose();
+        }
+        return copy;
+    }
+
+    public static List<String> decodeAll(String filePath) throws IOException {
+        BufferedImage image = ImageIO.read(new File(filePath));
+        return decodeAll(image);
+    }
+
+    private static Rectangle expandAndClip(Rectangle source, int width, int height) {
+        int margin = Math.max(8, (int) Math.ceil(Math.max(source.width, source.height) * 0.04));
+        int x1 = Math.max(0, source.x - margin);
+        int y1 = Math.max(0, source.y - margin);
+        int x2 = Math.min(width, source.x + source.width + margin);
+        int y2 = Math.min(height, source.y + source.height + margin);
+        return new Rectangle(x1, y1, x2 - x1, y2 - y1);
     }
 
     /**
