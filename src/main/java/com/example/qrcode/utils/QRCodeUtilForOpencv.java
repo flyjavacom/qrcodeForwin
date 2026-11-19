@@ -21,6 +21,17 @@ import java.nio.charset.StandardCharsets;
  */
 public class QRCodeUtilForOpencv {
 
+    static {
+        // WeChatQRCode's native library links against OpenCV objdetect. Load that
+        // module first so JavaCPP extracts and loads libopencv_objdetect before
+        // loading libjniopencv_wechat_qrcode (notably on macOS arm64).
+        try {
+            Class.forName("org.bytedeco.opencv.global.opencv_objdetect");
+        } catch (ClassNotFoundException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
     /**
      * WeChatQRCode 引擎初始化很重（需要加载模型），必须复用，不能每识别一张图就 new 一次。
      * 这里按线程各持有一个实例：既能并行识别，又避免多线程共享同一实例的线程安全问题。

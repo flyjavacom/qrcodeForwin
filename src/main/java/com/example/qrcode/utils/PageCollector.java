@@ -90,11 +90,24 @@ public class PageCollector {
             return false;
         }
         acceptedCount.incrementAndGet();
-        String old = pageContentMap.putIfAbsent(page, content);
-        if (old != null && !old.equals(content)) {
+        pageContentMap.compute(page, (ignored, old) -> {
+            if (old == null || old.equals(content)) {
+                return old == null ? content : old;
+            }
+            // Video decoders can return a valid Base64 prefix while the QR is still
+            // resolving. Prefer a later full decode when it extends that prefix.
+            if (content.startsWith(old)) {
+                System.out.println("第" + page + "页由部分识别更新为更完整内容（" + old.length()
+                        + " → " + content.length() + " 字符） " + source);
+                return content;
+            }
+            if (old.startsWith(content)) {
+                return old;
+            }
             conflictCount.incrementAndGet();
-            System.out.println("警告：第" + page + "页识别出不同内容，保留首次识别结果 " + source);
-        }
+            System.out.println("警告：第" + page + "页识别出不同内容，保留首次完整结果 " + source);
+            return old;
+        });
         return true;
     }
 

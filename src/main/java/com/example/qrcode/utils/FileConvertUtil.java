@@ -330,6 +330,30 @@ public class FileConvertUtil {
                     "该多码传输未识别到文件清单；请重新生成四码帧并完整录制。".getBytes(StandardCharsets.UTF_8));
         }
 
+        String legacyTailWarning = "";
+        if (manifest == null && !multiQrFrame && !pages.isEmpty()) {
+            StringBuilder receivedPayload = new StringBuilder();
+            boolean contiguous = true;
+            for (int i = 0; i < pages.size(); i++) {
+                if (pages.get(i) != i) {
+                    contiguous = false;
+                    break;
+                }
+                receivedPayload.append(pageContentMap.get(i));
+            }
+            if (contiguous && receivedPayload.length() >= 10) {
+                int base64Length = receivedPayload.length() - 10;
+                if (base64Length % 4 != 0) {
+                    String lastPage = pageContentMap.get(pages.get(pages.size() - 1));
+                    legacyTailWarning = lastPage != null && lastPage.length() == SEGMENT_DATA_SIZE
+                            ? "注意：已识别的页码连续且最后一页也是满页，但 Base64 长度 " + base64Length
+                                + " 余数为 " + (base64Length % 4) + "；数据尾部仍不完整，可能还缺最大已识别页之后的后续页。"
+                                + "旧协议没有总页数清单，不能仅凭当前已识别页数判断传输完成。\n"
+                            : "注意：Base64 长度 " + base64Length + " 不是 4 的倍数，已识别末页可能只解出部分内容。\n";
+                }
+            }
+        }
+
         StringBuilder report = new StringBuilder();
         report.append("视频二维码识别恢复清单\n")
                 .append("已识别页数：").append(pages.size()).append("\n")
@@ -339,6 +363,7 @@ public class FileConvertUtil {
                 .append("已识别页码：").append(pages.isEmpty() ? "无" : joinPages(pages)).append("\n")
                 .append("缺失页：")
                 .append(missingPages.isEmpty() ? "无" : joinPages(missingPages)).append("\n")
+                .append(legacyTailWarning)
                 .append(manifest == null
                         ? (multiQrFrame
                             ? "注意：多码帧缺少文件清单，无法可靠判断完整性；系统会阻止据此恢复，请重新生成并完整录制。\n"
@@ -475,10 +500,13 @@ public class FileConvertUtil {
         // 原base64文本
         String base64string = content.substring(10);
 
-        // Base64编码后的总长度必定是4的倍数，不是4的倍数说明最后一页二维码没有被录进视频（尾部缺失）
+        // Base64 encoded data must have a length divisible by four. This can mean
+        // the final page was absent or a decoder only returned a truncated payload.
         if (base64string.length() % 4 != 0) {
-            throw new DataIncompleteException("数据不完整，已停止生成文件！\n已识别到第 " + maxPage
-                    + " 页，但 Base64 长度不是 4 的倍数，最后一页二维码很可能没有被录制到。\n建议：录制时在最后一页多停留 1~2 秒后重新录制。");
+            throw new DataIncompleteException("数据不完整，已停止生成文件！\n已识别的最大页码是 " + maxPage
+                    + " 页，但拼接后的 Base64 长度 " + base64string.length() + " 不是 4 的倍数。"
+                    + "可能是最后一页未录全，或视频解码曾只返回该页的部分内容。\n"
+                    + "请确认最后一页清晰完整，并在末页多停留 1~2 秒后重试；若仍失败，请保留识别结果供进一步检查。");
         }
         if (pageContentMap.get(maxPage).length() == SEGMENT_DATA_SIZE) {
             System.out.println("提示：最后一页内容为满页，若原文件较大请确认视频末尾没有漏录");

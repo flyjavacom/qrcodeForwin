@@ -17,6 +17,8 @@ import java.nio.file.Paths;
 
 public class QRCodeUtil {
 
+    private static volatile boolean openCvDecoderAvailable = true;
+
     /** 一页二维码的有效内容长度下限 */
     private static final int MIN_VALID_LENGTH = 20;
 
@@ -295,13 +297,19 @@ public class QRCodeUtil {
         if (detectionCount <= 0 && !forceHeavy) {
             return new Outcome(null, detectionCount);
         }
-        try {
-            res = QRCodeUtilForOpencv.decode(image);
-            if (isValid(res)) {
-                return new Outcome(res, detectionCount);
+        if (openCvDecoderAvailable) {
+            try {
+                res = QRCodeUtilForOpencv.decode(image);
+                if (isValid(res)) {
+                    return new Outcome(res, detectionCount);
+                }
+            } catch (LinkageError e) {
+                openCvDecoderAvailable = false;
+                System.err.println("OpenCV 微信二维码引擎不可用，本次运行将跳过该引擎并继续使用 BoofCV/ZXing："
+                        + e.getMessage());
+            } catch (Exception e) {
+                System.err.println("Opencv解析二维码异常: " + e.getMessage());
             }
-        } catch (Exception e) {
-            System.err.println("Opencv解析二维码异常: " + e.getMessage());
         }
         return new Outcome(null, detectionCount);
     }

@@ -26,4 +26,4 @@ if ! "$java_bin" -version >/dev/null 2>&1; then
     exit 1
 fi
 
-exec "$java_bin" -jar "$jar"
+exec "$java_bin" -XX:ReservedCodeCacheSize=256m -jar "$jar"

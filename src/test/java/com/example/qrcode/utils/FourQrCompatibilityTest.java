@@ -43,6 +43,32 @@ public class FourQrCompatibilityTest {
     }
 
     @Test
+    public void laterFullDecodeReplacesEarlierTruncatedPrefixForSamePage() throws Exception {
+        byte[] original = new byte[1000];
+        new Random(1907).nextBytes(original);
+        String payload = String.format(Locale.ROOT, "%10s", "bin")
+                + Base64.getEncoder().encodeToString(original);
+        PageCollector collector = new PageCollector();
+        String page0 = payload.substring(0, PageCollector.SEGMENT_DATA_SIZE);
+        String finalPage = payload.substring(PageCollector.SEGMENT_DATA_SIZE);
+        String truncatedFinalPage = finalPage.substring(0, finalPage.length() - 2);
+
+        assertTrue(collector.accept(String.format(Locale.ROOT, "%4d", 0) + page0, "page-0"));
+        assertTrue(collector.accept(String.format(Locale.ROOT, "%4d", 1) + truncatedFinalPage,
+                "early-video-frame"));
+        assertTrue(collector.accept(String.format(Locale.ROOT, "%4d", 1) + finalPage,
+                "later-video-frame"));
+        assertEquals("A later decode that extends the first result is a recovery, not a conflict",
+                0, collector.getConflictCount());
+        assertEquals(finalPage, collector.getPageContentMap().get(1));
+
+        Path out = temporaryFolder.newFolder("prefix-upgrade-receive").toPath();
+        Path recovered = java.nio.file.Paths.get(FileConvertUtil.buildFileFromPages(out.toString(),
+                collector.getPageContentMap(), collector.getConflictCount()));
+        assertArrayEquals(original, Files.readAllBytes(recovered));
+    }
+
+    @Test
     public void newReceiverStillReadsLegacySingleQrImages() throws Exception {
         Path qrFolder = temporaryFolder.newFolder("legacy-single-qr").toPath();
         byte[] original = "legacy receiver compatibility".getBytes(StandardCharsets.UTF_8);
