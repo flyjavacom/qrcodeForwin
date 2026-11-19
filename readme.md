@@ -42,12 +42,20 @@
 
 - 每帧二维码比传统单码更小，识别效果依赖屏幕缩放、拍摄距离、对焦、运动模糊和视频压缩；四码布局不等于四倍端到端传输速度。
 - 200 毫秒是本地播放器对每张图片的最短计划停留时间，不代表相机曝光、显示器刷新和视频编码一定完整记录了每张图片。正式传输前建议小文件实拍验证，必要时降低播放速度。
-- Java 运行环境使用 Java 8。视频处理依赖项目内置 FFmpeg（`src/main/resources/ffmpeg-8.0-essentials_build`）。
+- Java 运行环境使用 Java 8。视频处理依赖系统 FFmpeg：macOS 可用 `brew install ffmpeg` 安装；Windows 请将 `ffmpeg.exe` 加入 `PATH`，或启动时通过 `-Dqrcode.ffmpeg.path=完整路径` 指定。
 
 ## 开发与构建
 
-```powershell
+### macOS Apple Silicon
+
+```bash
 mvn clean package
+```
+
+### Windows x64
+
+```powershell
+mvn -Djavacpp.platform=windows-x86_64 clean package
 ```
 
 生成的可运行 jar 位于 `target/` 目录。应用通过 `com.example.qrcode.demo.FileTransferApp` 启动。

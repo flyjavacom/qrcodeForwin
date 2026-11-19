@@ -12,6 +12,10 @@
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <javacpp.version>1.5.12</javacpp.version>
+        <openblas.version>0.3.30-1.5.12</openblas.version>
+        <opencv.version>4.11.0-1.5.12</opencv.version>
+        <javacpp.platform>${os.detected.classifier}</javacpp.platform>
     </properties>
 
     <dependencies>
@@ -51,27 +55,26 @@
         <dependency>
             <groupId>org.bytedeco</groupId>
             <artifactId>javacpp</artifactId>
-            <version>1.5.7</version>
-            <classifier>windows-x86_64</classifier>
+            <version>${javacpp.version}</version>
+            <classifier>${javacpp.platform}</classifier>
         </dependency>
         <dependency>
             <groupId>org.bytedeco</groupId>
             <artifactId>openblas</artifactId>
-            <version>0.3.19-1.5.7</version>
-            <classifier>windows-x86_64</classifier>
+            <version>${openblas.version}</version>
+            <classifier>${javacpp.platform}</classifier>
         </dependency>
         <dependency>
             <groupId>org.bytedeco</groupId>
             <artifactId>opencv</artifactId>
-            <version>4.5.5-1.5.7</version>
+            <version>${opencv.version}</version>
         </dependency>
         <dependency>
             <groupId>org.bytedeco</groupId>
             <artifactId>opencv</artifactId>
-            <version>4.5.5-1.5.7</version>
-            <classifier>windows-x86_64</classifier>
+            <version>${opencv.version}</version>
+            <classifier>${javacpp.platform}</classifier>
         </dependency>
-        <!--以上依赖用于windows系统 如果要发布到liunx系统把windows-x86_64改成liunx-x86_64-->
 
 
         <!--   xls文档解析和生成-->
@@ -121,23 +124,33 @@
     </dependencies>
 
 
+    <profiles>
+        <profile>
+            <id>macos-arm64-javacpp</id>
+            <activation><os><name>Mac OS X</name><arch>aarch64</arch></os></activation>
+            <properties><javacpp.platform>macosx-arm64</javacpp.platform></properties>
+        </profile>
+    </profiles>
     <build>
+        <extensions>
+            <extension>
+                <groupId>kr.motd.maven</groupId>
+                <artifactId>os-maven-plugin</artifactId>
+                <version>1.7.1</version>
+            </extension>
+        </extensions>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <!-- 版本可根据实际情况调整 -->
                 <version>2.4.3</version>
                 <executions>
                     <execution>
-                        <goals>
-                            <goal>repackage</goal>
-                        </goals>
+                        <goals><goal>repackage</goal></goals>
                     </execution>
                 </executions>
                 <configuration>
                     <includeSystemScope>true</includeSystemScope>
-                    <!-- 此处替换对应的Main方法 -->
                     <mainClass>com.example.qrcode.Main</mainClass>
                 </configuration>
             </plugin>
@@ -145,11 +158,9 @@
         <resources>
             <resource>
                 <directory>src/main/resources</directory>
-                <includes>
-                    <include>**/*</include>
-                </includes>
+                <includes><include>**/*</include></includes>
+                <excludes><exclude>ffmpeg-8.0-essentials_build/doc/**</exclude></excludes>
             </resource>
         </resources>
-
     </build>
 </project>

@@ -1,4 +1,4 @@
 @echo off
-cd /C:/soft/二维码文件传输工具
-java -jar qrcodeForwin-1.0-SNAPSHOT.jar
+cd /d "%~dp0"
+java -jar "%~dp0target\qrcodeForwin-1.0-SNAPSHOT.jar"
 pause

@@ -54,7 +54,7 @@ public class FFmpegUtil {
     static ExecutorService executorService = new ThreadPoolExecutor(100,200,60L, TimeUnit.SECONDS,new ArrayBlockingQueue<>(10000));
 
 
-    private static File tempFFmpeg = initFFmpeg();
+    private static volatile File tempFFmpeg;
 
     /**
      * 初始化FFmpeg
@@ -64,13 +64,53 @@ public class FFmpegUtil {
         // 将ffmpeg 直接放在Resources 下面，这样不需要本地安装了。
         // 从 JAR 中提取 ffmpeg.exe 到临时文件：由于 JAR 文件是只读的，无法直接从中执行可执行文件，因此需要先将 ffmpeg.exe 提取到一个临时文件中，然后再执行该文件
 
-        // 资源路径中的 ffmpeg.exe
-        String resourcePath = "/ffmpeg-8.0-essentials_build/bin/ffmpeg.exe";
-        // 提取 ffmpeg.exe 到临时文件
-        File tempFile = extractResourceToFile(resourcePath);
-        System.out.println("获取ffmpeg.exe临时路径 ==" +  tempFile.getAbsolutePath());
-        return  tempFile;
+        String executable = isWindows() ? "ffmpeg.exe" : "ffmpeg";
+        String configuredPath = System.getProperty("qrcode.ffmpeg.path");
+        if (configuredPath != null && !configuredPath.trim().isEmpty()) {
+            File configured = new File(configuredPath.trim());
+            if (configured.isFile() && (isWindows() || configured.canExecute())) {
+                return configured;
+            }
+            throw new IllegalStateException("FFmpeg 配置路径无效或不可执行：" + configuredPath);
+        }
+        File systemFFmpeg = findOnPath(executable);
+        if (systemFFmpeg != null) {
+            return systemFFmpeg;
+        }
+        if (!isWindows()) {
+            String[] commonPaths = {"/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"};
+            for (String path : commonPaths) {
+                File candidate = new File(path);
+                if (candidate.isFile() && candidate.canExecute()) {
+                    return candidate;
+                }
+            }
+        }
+        String resourcePath = "/ffmpeg-8.0-essentials_build/bin/" + executable;
+        File bundled = extractResourceToFile(resourcePath, executable);
+        if (bundled != null && bundled.isFile()) {
+            return bundled;
+        }
+        throw new IllegalStateException("未找到 FFmpeg。macOS 请安装 ffmpeg（例如 brew install ffmpeg）；Windows 请将 ffmpeg.exe 加入 PATH 或通过 -Dqrcode.ffmpeg.path 指定路径。");
 
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static File findOnPath(String command) {
+        String path = System.getenv("PATH");
+        if (path == null) {
+            return null;
+        }
+        for (String directory : path.split(java.util.regex.Pattern.quote(File.pathSeparator))) {
+            File candidate = new File(directory, command);
+            if (candidate.isFile() && candidate.canExecute()) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     /**
@@ -264,6 +304,10 @@ public class FFmpegUtil {
             return cached;
         }
         boolean usable = false;
+        if (!isWindows()) {
+            HW_ACCEL_CACHE.put(videoFilePath, Boolean.FALSE);
+            return false;
+        }
         Process process = null;
         try {
             ProcessBuilder pb = new ProcessBuilder(
@@ -451,7 +495,7 @@ public class FFmpegUtil {
             // -hide_banner -loglevel error：减少控制台输出，逐行打印FFmpeg日志本身也有不小的开销
             // fps=15：每秒提取15帧
             ProcessBuilder processBuilder = new ProcessBuilder(
-                    "\"" +  tempFFmpeg.getAbsolutePath() + "\"",
+                    tempFFmpeg.getAbsolutePath(),
                     "-hide_banner", "-loglevel", "error",
                     "-i", videoFilePath,
                     "-vf", "fps=15",  // 每秒提取15帧
@@ -478,17 +522,17 @@ public class FFmpegUtil {
      * @param resourcePath
      * @return
      */
-    private static File extractResourceToFile(String resourcePath) {
+    private static File extractResourceToFile(String resourcePath, String executableName) {
         try (InputStream inputStream = FFmpegUtil.class.getResourceAsStream(resourcePath)) {
             if (inputStream == null) {
                 System.err.println("Resource not found: " + resourcePath);
                 return null;
             }
 
-            // 缓存到固定目录复用：ffmpeg.exe 有 90MB+，每次启动都从 jar 解压要花 20 秒
+            // 缓存到固定目录复用：FFmpeg 二进制文件较大，每次启动都从 jar 解压要花 20 秒
             Path cacheDir = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"), "qrcode-forwin");
             Files.createDirectories(cacheDir);
-            Path cacheFile = cacheDir.resolve("ffmpeg.exe");
+            Path cacheFile = cacheDir.resolve(executableName);
             long resourceSize = inputStream.available();
             if (Files.exists(cacheFile) && Files.size(cacheFile) > 1024 * 1024
                     && (resourceSize <= 0 || Files.size(cacheFile) >= resourceSize * 0.95)) {
@@ -533,7 +577,7 @@ public class FFmpegUtil {
             }
             // 构建FFmpeg命令
             String[] command = {
-                    "\"" +  tempFFmpeg.getAbsolutePath() + "\"",
+                    tempFFmpeg.getAbsolutePath(),
                     "-f", "lavfi",
                     "-i", "color=c=black:s=1980x1280:d=1:r=1",
                     "-i", imagePath1,
@@ -686,7 +730,7 @@ public class FFmpegUtil {
             // 构建FFmpeg命令
             //ffmpeg -i 1111.jpg -filter_complex "[0:v]crop=w=1000:h=600:x=0:y=0[top_left];[0:v]crop=w=1000:h=600:x=1480:y=0[top_right];[0:v]crop=w=1000:h=600:x=0:y=780[bottom_left];[0:v]crop=w=1000:h=600:x=1480:y=780[bottom_right]" -map "[top_left]" top_left_output.jpg -map "[top_right]" top_right_output.jpg -map "[bottom_left]" bottom_left_output.jpg -map "[bottom_right]" bottom_right_output.jpg
             String[] command = {
-                    "\"" +  tempFFmpeg.getAbsolutePath() + "\"",
+                    tempFFmpeg.getAbsolutePath(),
                     "-i", inImagePath,
                     "-filter_complex", format,
                     "-map", "[top_left]", spltImagePath1,
